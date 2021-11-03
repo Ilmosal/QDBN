@@ -13,18 +13,20 @@ class RBM(object):
     """
     Base class for the rbm object
     """
-    def __init__(self, shape = [1,1], parameters = None, input_included = None):
+    def __init__(self, sampler, shape = [1,1], parameters = None, input_included = None):
         if not isinstance(shape,list) and len(shape) != 2:
             logging.error("Shape not an array with two values")
 
         self.metrics = []
         self.state = np.array([])
 
+        self.sampler = sampler
+
         if parameters is not None:
             if type(parameters) is str:
                 self.load_parameters(parameters)
-            elif type(parameters) is list: 
-                self.shape = parameters[0] 
+            elif type(parameters) is list:
+                self.shape = parameters[0]
                 self.weights = parameters[1]
                 self.visible_biases = parameters[2]
                 self.hidden_biases = parameters[3]
@@ -37,14 +39,14 @@ class RBM(object):
             self.shape = shape
 
             # Weights initialized from gaussian with stdDev=0.1/sqrt(n_visible*n_hidden) 
-            self.weights = (0.1 / np.sqrt(self.shape[0] * self.shape[1])) * np.random.randn(self.shape[0], self.shape[1])
+            self.weights = np.random.normal(0.0, 0.01, [self.shape[0], self.shape[1]])
 
             # Biases initialized at zeros
             self.visible_biases = np.zeros(self.shape[0], dtype=float)
             self.hidden_biases = np.zeros(self.shape[1], dtype=float)
 
             if input_included is not None:
-                self.label_weights = (0.1 / np.sqrt(input_included * self.shape[1])) * np.random.randn(input_included, self.shape[1])
+                self.label_weights = np.random.normal(0.0, 0.01, [input_included, self.shape[1]])
                 self.label_biases = np.zeros(input_included, dtype=float)
             else:
                 self.label_weights = None
@@ -64,16 +66,16 @@ class RBM(object):
             return utils.softmax(np.dot(state, self.label_weights.transpose()) + self.label_biases)
         else:
             return utils.activate_softmax(np.dot(state, self.label_weights.transpose()) + self.label_biases)
-    
+
     def infer_visible(self, state, exact = False):
         """
         Infer the states of the visible units
         """
         if exact:
             return utils.sigmoid(np.dot(state, self.weights.transpose()) + self.visible_biases)
-        else: 
+        else:
             return utils.activate_sigmoid(np.dot(state, self.weights.transpose()) + self.visible_biases)
-            
+
     def infer_hidden(self, state, exact = False, labels_state = None):
         """
         Infer the states of the hidden units
@@ -89,22 +91,102 @@ class RBM(object):
             else:
                 return utils.activate_sigmoid(np.dot(state, self.weights) + self.hidden_biases)
 
+    def create_dropoff_parameters(self, max_size, v_ids, h_ids):
+        """
+        Create dropoff paremeters for a rbm with max size set
+        """
+        # Create dropoff parameter containers
+        dropoff_w_matrices = []
+        dropoff_h_biases = []
+        dropoff_v_biases = []
+
+        drop_w_mask = np.zeros(self.weights.shape)
+        drop_v_mask = np.zeros(self.hidden_biases.shape)
+        drop_h_mask = np.zeros(self.hidden_biases.shape)
+
+        max_divide = 1
+
+        if max_size != -1: # Assume layers of roughly equal sizes
+            max_divide = max(math.floor(self.shape[1] / max_size), math.floor(self.shape[0] / max_size))
+
+            np.random.shuffle(h_ids)
+            np.random.shuffle(v_ids)
+
+            # Initialize all the full groups
+            for i in range(max_divide):
+                d_matrix = np.zeros([max_size, max_size])
+                d_h_bias = np.zeros([max_size])
+                d_v_bias = np.zeros([max_size])
+
+                # compute dropoff masks
+                for v_id in v_ids[i*max_size:(i+1)*max_size]:
+                    for h_id in h_ids[i*max_size:(i+1)*max_size]:
+                        drop_w_mask[v_id][h_id] = 1.0
+
+                    drop_v_mask[v_id] = 1.0
+
+                for h_id in h_ids[i*max_size:(i+1)*max_size]:
+                    drop_h_mask[h_id] = 1.0
+
+                d_j = 0
+                d_i = 0
+
+                for v_id in v_ids[i*max_size:(i+1)*max_size]:
+                    # Compute the sub weight matrices
+                    for h_id in h_ids[i*max_size:(i+1)*max_size]:
+                        d_matrix[d_i, d_j] = self.weights[v_id, h_id]
+                        d_j += 1
+                    # assign the sub visible biases
+                    d_v_bias[d_i] = self.visible_biases[v_id]
+                    d_j = 0
+                    d_i += 1
+
+                # assign the sub hidden biases
+                for h_id in h_ids[i*max_size:(i+1)*max_size]:
+                    d_h_bias[d_j] = self.hidden_biases[h_id]
+                    d_j += 1
+
+                # Append the matrices
+                dropoff_w_matrices.append(d_matrix)
+                dropoff_v_biases.append(d_v_bias)
+                dropoff_h_biases.append(d_h_bias)
+        else:
+            dropoff_w_matrices.append(np.copy(self.weights))
+            dropoff_h_biases.append(np.copy(self.hidden_biases))
+            dropoff_v_biases.append(np.copy(self.visible_biases))
+
+            drop_w_mask = np.ones(self.weights.shape)
+            drop_h_mask = np.ones(self.hidden_biases.shape)
+            drop_v_mask = np.ones(self.visible_biases.shape)
+
+        return dropoff_w_matrices, dropoff_h_biases, dropoff_v_biases, drop_w_mask, drop_h_mask, drop_v_mask, max_divide
+
     def train(self, batches, learning_rate, epochs, cd_iter=1, momentum = 0, regularization_constant = 0.0, max_size = -1, partial_groups = False):
         """
         Train RBM with data.
         """
-        #logging.info("Starting the training process")
+        logging.info("Starting the training process")
 
         batch_size = len(batches[0])
-        dw = None
-        ldw = None
-        scaling = 0.0
+        dw = np.copy(self.weights) * 0.0
+        dbv = np.copy(self.visible_biases) * 0.0
+        dbh = np.copy(self.hidden_biases) * 0.0
+
+        if self.input_included:
+            dbl = np.copy(self.label_biases) * 0.0
+            ldw = np.copy(self.label_weights) * 0.0
 
         # States of the visible and hidden units initialized randomly for all the batches
         state = [np.random.randint(0, 2, (batch_size, self.shape[0])).astype(float), np.random.randint(0, 2, (batch_size, self.shape[1])).astype(float)]
-        
+
+        if max_size != -1:
+            scaling = max_size / len(self.hidden_biases)
+            self.weights /= scaling
+        else:
+            scaling = 1.0
+
         for e in range(epochs):
-            #logging.info("Epoch n. {0}\n----------".format(e+1))
+            logging.info("Epoch n. {0}\n----------".format(e+1))
             for batch in batches:
                 # Clamp visible to data. Separate labels from batch if included
                 if self.input_included is not None:
@@ -113,51 +195,87 @@ class RBM(object):
                 else:
                     state[0] = copy.deepcopy(batch)
 
-                # Create dropoff weight matrix. This assumes that max_size is some multiple of the length of both state arrays. 
-                # The length of each element will be the scaling of that parameter
-                dropoff_matrix = np.copy(self.weights)
+                h_ids = np.arange(len(self.hidden_biases))
+                v_ids = np.arange(len(self.visible_biases))
 
-                if max_size != -1: # Assume layers of equal sizes
-                    max_divide = max(math.floor(len(self.hidden_biases) / max_size), math.floor(len(self.visible_biases) / max_size))
+                # Create dropoff parameters
+                dropoff_params = self.create_dropoff_parameters(max_size, v_ids, h_ids)
 
-                    h_ids = np.arange(len(self.hidden_biases))
-                    v_ids = np.arange(len(self.visible_biases))
-                    np.random.shuffle(h_ids)
-                    np.random.shuffle(v_ids)
+                dropoff_w_matrices = dropoff_params[0]
+                dropoff_h_biases = dropoff_params[1]
+                dropoff_v_biases = dropoff_params[2]
+                dropoff_matrix = dropoff_params[3]
+                dropoff_h_mask = dropoff_params[4]
+                dropoff_v_mask = dropoff_params[5]
+                max_divide = dropoff_params[6]
 
-                    dropoff_matrix *= 0.0
-                    scaling = max_size / len(self.hidden_biases)
-                    
-                    # Initialize all the full groups
-                    for i in range(max_divide):
-                        for v_id in v_ids[i*max_size:(i+1)*max_size]:
-                            for h_id in h_ids[i*max_size:(i+1)*max_size]:
-                                dropoff_matrix[v_id][h_id] = 1.0
-                else:
-                    scaling = 1.0
-                    dropoff_matrix *= 0.0
-                    dropoff_matrix += 1.0
-
-                # Create the dropoff weight matrix
+                # Create the dropoff weight matrix and scale up using scaling
                 dropoff_weights = dropoff_matrix * self.weights
+                dropoff_v_bias = self.visible_biases * dropoff_v_mask
+                dropoff_h_bias = self.hidden_biases * dropoff_h_mask
+                label_influence = self.hidden_biases * 0.0
 
-                # Infer the hidden units from the clamped data
+                # compute label influence if included
                 if self.input_included is not None:
-                    label_influence = np.dot(label_state, self.label_weights)
-                    state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + self.hidden_biases + label_influence)
+                    label_influence = np.dot(np.zeros(self.input_included) + 0.5, self.label_weights)
                     label_copy = copy.deepcopy(label_state)
-                else:
-                    state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + self.hidden_biases)
 
+                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + label_influence)
                 state_copy = copy.deepcopy(state)
+                state[1] = utils.sample(state[1])
 
-                # Apply contrastive divergence
-                for i in range(cd_iter):
-                    state[0] = utils.activate_sigmoid(np.dot(state[1], dropoff_weights.transpose()) + self.visible_biases)
+                # Apply contrastive divergence steps
+                for i in range(max_divide):
+                    tmp_max_size = max_size
+
+                    if max_size == -1:
+                        tmp_max_size = self.shape[1]
+
+                    # Add passive label influence to hidden biases
                     if self.input_included is not None:
-                        state[1] = utils.activate_sigmoid(np.dot(state[0], dropoff_weights) + self.hidden_biases + label_influence)
-                    else:
-                        state[1] = utils.activate_sigmoid(np.dot(state[0], dropoff_weights) + self.hidden_biases)
+                        j = 0
+                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
+                            dropoff_h_biases[i][j] += label_influence[h_id]
+                            j += 1
+                        j = 0
+
+                    sub_state = [np.zeros([batch_size, tmp_max_size]), np.zeros([batch_size, tmp_max_size])]
+
+                    # Create the sub state for the dropoff network
+                    for batch_id in range(batch_size):
+                        j = 0
+                        for v_id in v_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
+                            sub_state[0][batch_id, j] = state[0][batch_id, v_id]
+                            j += 1
+
+                        j = 0
+
+                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
+                            sub_state[1][batch_id, j] = state[1][batch_id, h_id]
+                            j += 1
+
+                    # Sample the states for the model distribution
+                    sub_state = self.sample_model_distribution(
+                            sub_state,
+                            dropoff_w_matrices[i],
+                            dropoff_v_biases[i],
+                            dropoff_h_biases[i])
+
+                    # Get the state back from the sub state
+                    for batch_id in range(batch_size):
+                        j = 0
+                        for v_id in v_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
+                            state[0][batch_id, v_id] = sub_state[0][batch_id, j]
+                            j += 1
+
+                        j = 0
+                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
+                            state[1][batch_id, h_id] = sub_state[1][batch_id, j]
+                            j += 1
+
+                # Reconstruction statistics
+                state[0] = utils.sigmoid(np.dot(state[1], dropoff_weights.transpose()) + dropoff_v_bias)
+                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + label_influence)
 
                 if self.input_included is not None:
                     label_state = utils.softmax(np.dot(state[1], self.label_weights.transpose()) + self.label_biases)
@@ -167,29 +285,48 @@ class RBM(object):
                 dw_tmp *= dropoff_matrix
                 dw_tmp -= utils.compute_weight_reg(self.weights, regularization_constant)
 
-                if dw is not None:
-                    dw_tmp = momentum * dw + (1 - momentum) * dw_tmp
+                dw_tmp = momentum * dw + (1 - momentum) * dw_tmp
 
                 self.weights += (learning_rate / batch_size) * dw_tmp
                 dw = dw_tmp
 
-                self.visible_biases += (learning_rate / batch_size) * np.sum(state[0] - state_copy[0], axis=0)
-                self.hidden_biases += (learning_rate / batch_size) * np.sum(state[1] - state_copy[1], axis=0)
+                tmp_bv = (learning_rate / batch_size) * np.sum(state_copy[0] - state[0], axis=0) * dropoff_v_mask
+                tmp_bh = (learning_rate / batch_size) * np.sum(state_copy[1] - state[1], axis=0) * dropoff_h_mask
+
+                tmp_bv = momentum * dbv + (1 - momentum) * tmp_bv
+                tmp_bh = momentum * dbh + (1 - momentum) * tmp_bh
+
+                self.visible_biases += tmp_bv
+                self.hidden_biases += tmp_bh
+
+                dbv = tmp_bv
+                dbh = tmp_bh
 
                 if self.input_included is not None:
-                    l_reg_matrix = utils.compute_weight_reg(self.label_weights, regularization_constant)
-                    ldw_tmp = (learning_rate / batch_size) * (np.dot(label_copy.transpose(), state_copy[1]) - np.dot(label_state.transpose(), state[1]) - l_reg_matrix)
-
-                    if ldw is not None:
-                        self.label_weights += momentum * ldw + (1 - momentum) * ldw_tmp
-                    else:
-                        self.label_weights += ldw_tmp
+                    ldw_tmp = np.dot(label_copy.transpose(), state_copy[1]) - np.dot(label_state.transpose(), state[1])
+                    ldw_tmp -= utils.compute_weight_reg(self.label_weights, regularization_constant)
+                    ldw_tmp = momentum * ldw + (1 - momentum) * ldw_tmp
+                    self.label_weights += (learning_rate / batch_size) * ldw_tmp
                     ldw = ldw_tmp
 
-                    self.label_biases += (learning_rate / batch_size) * np.sum(label_state - label_copy, axis=0)
-        
+                    tmp_bl = (learning_rate / batch_size) * np.sum(label_copy - label_state, axis=0)
+                    tmp_bl = momentum * dbl + (1 - momentum) * tmp_bl
+                    self.label_biases += tmp_bl
+                    dbl = tmp_bl
+
         # Scale the weights so that the expected input to units works as expected
         self.weights *= scaling
+
+    def sample_model_distribution(self, state, weights, v_biases, h_biases):
+        """
+        Apply contrastive divergence to approximate the gradient of the cost function
+        """
+        self.sampler.set_model_parameters(weights, v_biases, h_biases)
+
+        if self.sampler.model_id == 'model_cd':
+            self.sampler.set_dataset(state[0])
+
+        return self.sampler.estimate_model()
 
     def sample(self, input_value = None, n_samples = 1, cycles = 10):
         """
@@ -235,12 +372,25 @@ class RBM(object):
 
         return label_sample
 
+    def evaluate(self, data, labels, cycles):
+        """
+        Evaluate RBM and returng the predict rate
+        """
+        predictions = self.classify(data, cycles)
+        pr = 0
+
+        for i in range(len(predictions)):
+            if np.argmax(predictions[i]) == np.argmax(labels[i]):
+                pr += 1
+
+        return pr / len(predictions)
+
     def get_status(self):
         """
         Print out the status of the network
         """
         status_string = "RBM status: "
-    
+
         status_string += "Visible biases"
         status_string += str(self.visible_biases)
         status_string += "\n"
@@ -262,7 +412,7 @@ class RBM(object):
             parameters = json.load(parameter_file)
             parameter_file.close()
 
-            self.shape = parameters['shape'] 
+            self.shape = parameters['shape']
             self.weights = np.array(parameters['weights'])
             self.visible_biases = np.array(parameters['visible_biases'])
             self.hidden_biases = np.array(parameters['hidden_biases'])
@@ -289,7 +439,7 @@ class RBM(object):
             'input_included':self.input_included,
             'label_weights':self.label_weights.tolist(),
             'label_biases':self.label_biases.tolist()
-        } 
+        }
 
         try:
             parameter_file = open(parameter_file, 'w')

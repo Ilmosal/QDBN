@@ -16,7 +16,7 @@ class DBN(object):
     Class for a single DBN
     """
     def __init__(self, shape = [1,1], label_shape = 1, parameter_file = None):
-        self.shape = shape 
+        self.shape = shape
         self.label_shape = label_shape
 
         self.weights = []
@@ -37,7 +37,7 @@ class DBN(object):
             for i in range(len(shape)):
                 # Biases initialized with zeros
                 self.biases.append(np.zeros(self.shape[i], dtype=float))
-                if i <= len(self.shape) - 2:
+                if i != len(self.shape) - 1:
                     self.gen_biases.append(np.zeros(self.shape[i], dtype=float))
 
             # Normalize label weights with stdev=0.1/((n_label+n_visible)*nhidden). Test later if only n_label works better§
@@ -46,9 +46,9 @@ class DBN(object):
         else:
             self.load_parameters(parameter_file)
 
-    def greedy_pretrain(self, batches, learning_rate, epochs, cd_iter = 1, momentum = 0.0, regularization_constant = 0.0, max_size = -1, labels = False):
+    def greedy_pretrain(self, sampler, batches, learning_rate, epochs, cd_iter = 1, momentum = 0.0, regularization_constant = 0.0, max_size = -1, labels = False):
         """
-        Function for greedily pre-training a stack of RBMs to initialize the weight parameters of the DBN. 
+        Function for greedily pre-training a stack of RBMs to initialize the weight parameters of the DBN.
         """
         logging.info('Starting the greedy pretraining process')
 
@@ -83,7 +83,7 @@ class DBN(object):
                             None
                 ]
 
-            rbm = RBM(parameters=parameters)
+            rbm = RBM(sampler, parameters=parameters)
 
             if i != 0:
                 # Create new input data array from the last layer of data. Append the label data to the last layer
@@ -99,12 +99,12 @@ class DBN(object):
 
             # Train the rbm
             rbm.train(
-                    data_set_cpy, 
-                    learning_rate = learning_rate, 
-                    epochs = epochs, 
-                    cd_iter = cd_iter, 
-                    momentum = momentum, 
-                    regularization_constant = regularization_constant, 
+                    data_set_cpy,
+                    learning_rate = learning_rate,
+                    epochs = epochs,
+                    cd_iter = cd_iter,
+                    momentum = momentum,
+                    regularization_constant = regularization_constant,
                     max_size = max_size)
 
             rbms.append(rbm)
@@ -113,6 +113,7 @@ class DBN(object):
                 self.biases[i] = np.copy(rbm.visible_biases)
                 self.biases[i+1] = np.copy(rbm.hidden_biases)
                 self.weights[i] = np.copy(rbm.weights)
+                self.gen_biases[i] = np.copy(rbm.visible_biases)
 
                 if labels:
                     self.label_biases = np.copy(rbm.label_biases)
@@ -133,10 +134,15 @@ class DBN(object):
 
         batch_size = len(batches[0])
 
+        # momentum values for the algorithm
+        dw = [np.copy(w) * 0.0 for w in self.weights]
+        gdw = [np.copy(w) * 0.0 for w in self.gen_weights]
+        ldw = np.copy(self.label_weights) * 0.0
+        bdw = [np.copy(b) * 0.0 for b in self.biases]
+        gbdw = [np.copy(b) * 0.0 for b in self.gen_biases]
+        lbdw = np.copy(self.label_biases) * 0.0
+
         for e in range(epochs):
-            dw = [None for i in range(len(self.weights))]
-            gdw = [None for i in range(len(self.gen_weights))]
-            ldw = None
 
             logging.info("Epoch n. {0}\n----------".format(e+1))
             for batch in batches:
@@ -169,7 +175,7 @@ class DBN(object):
                 sleep_states = copy.deepcopy(wake_states)
                 
                 for i in range(cycles):
-                    sleep_probs[-2] = sigmoid(np.dot(sleep_states[-1], self.weights[-1].transpose()) + self.biases[-2])
+                    sleep_probs[-2] = sigmoid(np.dot(sleep_states[-1], self.weights[-1].transpose()) + self.gen_biases[-1])
                     sleep_states[-2] = sample(sleep_probs[-2])
                     label_probs = softmax(np.dot(sleep_states[-1], self.label_weights.transpose()) + self.label_biases)
                     sleep_probs[-1] = sigmoid(np.dot(sleep_states[-2], self.weights[-1]) + self.biases[-1] + np.dot(label_probs, self.label_weights))
@@ -179,13 +185,15 @@ class DBN(object):
                 sleep_label_statistics = np.reshape(label_probs, [batch_size, len(self.label_biases), 1]) * np.reshape(sleep_states[-1], [batch_size, 1, len(self.biases[-1])])
 
                 # Step 3: downwards pass 
-                for i in range(len(self.shape) - 2, 1, -1):
+                for i in range(len(self.shape) - 3, -1, -1):
                     sleep_probs[i] = sigmoid(np.dot(sleep_states[i+1], self.gen_weights[i].transpose()) + self.gen_biases[i])
                     sleep_states[i] = sample(sleep_probs[i])
 
                 # Step 4: generate predictions
+                for i in range(1, len(self.shape) - 1):
+                    predict_sleep_probs[i] = sigmoid(np.dot(sleep_states[i-1], self.weights[i-1]) + self.biases[i])
+
                 for i in range(len(self.shape) - 2):
-                    predict_sleep_probs[i+1] = sigmoid(np.dot(sleep_states[i], self.weights[i]) + self.biases[i+1])
                     predict_wake_probs[i] = sigmoid(np.dot(wake_states[i+1], self.gen_weights[i].transpose()) + self.gen_biases[i])
 
                 # Step 5: update model parameters
@@ -206,41 +214,55 @@ class DBN(object):
                     nabla_weights[i] = np.sum(np.reshape(sleep_states[i], [batch_size, len(self.biases[i]), 1]) * np.reshape((sleep_states[i+1] - predict_sleep_probs[i+1]), [batch_size, 1, len(self.biases[i+1])]), axis = 0) - compute_weight_reg(self.weights[i], regularization_constant)
 
                 for i in range(len(self.shape) - 2):
-                    if dw[i] is not None:
-                        nabla_weights[i] = momentum * dw[i] + (1 - momentum) * nabla_weights[i]
+                    nabla_weights[i] = momentum * dw[i] + (1 - momentum) * nabla_weights[i]
 
                     self.weights[i] += (learning_rate / batch_size) * nabla_weights[i]
                     dw[i] = nabla_weights[i]
 
-                    self.biases[i+1] += (learning_rate / batch_size) * np.sum(sleep_states[i+1] - predict_sleep_probs[i+1], axis = 0)
+                    b_tmp = (learning_rate / batch_size) * np.sum(sleep_states[i+1] - predict_sleep_probs[i+1], axis = 0)
+                    b_tmp = momentum * bdw[i+1] * (1 - momentum) * b_tmp
+                    self.biases[i+1] += b_tmp
+                    bdw[i+1] = b_tmp
 
                 # Update generative parameters
                 for i in range(len(self.shape) - 2):
-                    if gdw[i] is not None:
-                        nabla_gdw[i] = momentum * gdw[i] + (1 - momentum) * nabla_gdw[i]
+                    nabla_gdw[i] = momentum * gdw[i] + (1 - momentum) * nabla_gdw[i]
 
-                    self.gen_weights[i] += (learning_rate / batch_size) *  nabla_gdw[i]
+                    self.gen_weights[i] += (learning_rate / batch_size) * nabla_gdw[i]
                     gdw[i] = nabla_gdw[i]
 
-                    self.gen_biases[i] += (learning_rate / batch_size) * np.sum(wake_states[i] - predict_wake_probs[i], axis = 0) 
+                    gb_tmp = (learning_rate / batch_size) * np.sum(wake_states[i] - predict_wake_probs[i], axis = 0)
+                    gb_tmp = momentum * gbdw[i] + (1 - momentum) * gb_tmp
+                    self.gen_biases[i] += gb_tmp
+                    gbdw[i] = gb_tmp
 
                 # Update associative parameters
-                if ldw is not None:
-                    nabla_label_weights = momentum * ldw + (1 - momentum) * nabla_label_weights
+                nabla_label_weights = momentum * ldw + (1 - momentum) * nabla_label_weights
 
                 self.label_weights += (learning_rate / batch_size) * nabla_label_weights
                 ldw = nabla_label_weights
 
-                self.label_biases += (learning_rate / batch_size) * np.sum(labels_cpy - label_probs, axis = 0)
+                lb_tmp = (learning_rate / batch_size) * np.sum(labels_cpy - label_probs, axis = 0)
+                lb_tmp = momentum * lbdw + (1 - momentum) * lb_tmp
+                self.label_biases += lb_tmp
+                lbdw = lb_tmp
 
-                if dw[-1] is not None:
-                    nabla_weights[-1] = momentum * dw[-1] + (1 - momentum) * nabla_weights[-1]
+                nabla_weights[-1] = momentum * dw[-1] + (1 - momentum) * nabla_weights[-1]
 
                 self.weights[-1] += (learning_rate / batch_size) * nabla_weights[-1]
-                dw[-1] = nabla_weights[-1]
+                dw[-1] = np.copy(nabla_weights[-1])
 
-                self.biases[-1] += (learning_rate / batch_size) * np.sum(wake_states[-1] - sleep_states[-1], axis = 0)
-                self.biases[-2] += (learning_rate / batch_size) * np.sum(wake_states[-2] - sleep_states[-2], axis = 0)
+                b_tmp = (learning_rate / batch_size) * np.sum(wake_states[-1] - sleep_states[-1], axis = 0)
+                gb_tmp = (learning_rate / batch_size) * np.sum(wake_states[-2] - sleep_states[-2], axis = 0)
+
+                b_tmp = momentum * bdw[-1] + (1 - momentum) * b_tmp
+                gb_tmp = momentum * gbdw[-1] + (1 - momentum) * gb_tmp
+
+                self.biases[-1] += b_tmp
+                self.gen_biases[-1] += gb_tmp
+
+                bdw[-1] = b_tmp
+                gbdw[-1] = gb_tmp
 
     def finetuning_algorithm(self, batches, learning_rate = 0.01, epochs = 1, momentum = 0.0, regularization_constant = 0.0):
         """
@@ -341,20 +363,34 @@ class DBN(object):
         Classify data.
         """
         state = np.copy(data)
+        label_state = np.zeros([len(data), len(self.label_biases)])
+        label_state += 0.1
+        top_state = np.zeros([len(data), len(self.biases[-1])])
 
-        #infer the data for the last layer
-        for i in range(len(self.shape) - 1):
+        #infer the data for the second last layer
+        for i in range(len(self.shape) - 2):
             new_state = sigmoid(np.dot(state, self.weights[i]) + self.biases[i+1])
             del state
             state = new_state
 
-        # Classify using softmax
-        f = np.dot(state, self.label_weights.transpose())
-        f -= np.max(f, axis=1, keepdims=True) 
-        sum_f = np.sum(np.exp(f), axis=1, keepdims=True)
-        predictions = np.exp(f) / sum_f
+        top_state = sigmoid(np.dot(state, self.weights[-1]) + self.biases[-1] + np.dot(label_state, self.label_weights))
 
-        return predictions
+        # Gibbs sampling
+        for i in range(cycles):
+            label_state = softmax(np.dot(top_state, self.label_weights.transpose()) + self.label_biases)
+            top_state = sigmoid(np.dot(state, self.weights[-1]) + self.biases[-1] + np.dot(label_state, self.label_weights))
+
+        return softmax(np.dot(top_state, self.label_weights.transpose()) + self.label_biases)
+
+    def evaluate(self, data, labels, cycles):
+        pr = 0
+        predictions = self.classify(data, cycles)
+
+        for i in range(len(predictions)):
+            if np.argmax(predictions[i]) == np.argmax(labels[i]):
+                pr += 1
+                            
+        return pr / len(labels) 
 
     def load_parameters(self, parameter_file_location):
         """
