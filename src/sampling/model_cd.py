@@ -35,19 +35,29 @@ class ModelCD(Model):
         hid_state = self.activate_hidden(vis_state)
 
         for i in range(self.cd_iter):
-            vis_state = self.activate_visible(hid_state)
-            hid_state = self.activate_hidden(vis_state)
+            vis_state = self.activate_visible(hid_state, True)
+
+            if i + 1 == self.cd_iter:
+                hid_state = self.activate_hidden(vis_state, True)
+            else:
+                hid_state = self.activate_hidden(vis_state)
 
         return [vis_state, hid_state]
 
-    def activate_hidden(self, values):
+    def activate_hidden(self, values, exact = False):
         """
         Return sampled hidden units for visible values
         """
-        return sample(sigmoid(np.dot(values, self.weights) + self.hidden))
+        if exact:
+            return sigmoid(np.dot(values, self.weights) + self.hidden)
+        else:
+            return sample(sigmoid(np.dot(values, self.weights) + self.hidden))
 
-    def activate_visible(self, values):
+    def activate_visible(self, values, exact = False):
         """
         Return sampled visible units for hidden values
         """
-        return sample(sigmoid(np.dot(values, self.weights.transpose()) + self.visible))
+        if exact:
+            return sigmoid(np.dot(values, self.weights.transpose()) + self.visible)
+        else:
+            return sample(sigmoid(np.dot(values, self.weights.transpose()) + self.visible))

@@ -18,6 +18,7 @@ class RBM(object):
             logging.error("Shape not an array with two values")
 
         self.metrics = []
+        self.epochs_trained = 0
         self.state = np.array([])
 
         self.sampler = sampler
@@ -186,7 +187,7 @@ class RBM(object):
             scaling = 1.0
 
         for e in range(epochs):
-            logging.info("Epoch n. {0}\n----------".format(e+1))
+            logging.info("Epoch n. {0}".format(self.epochs_trained + 1))
             for batch in batches:
                 # Clamp visible to data. Separate labels from batch if included
                 if self.input_included is not None:
@@ -223,6 +224,14 @@ class RBM(object):
                 state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + label_influence)
                 state_copy = copy.deepcopy(state)
                 state[1] = utils.sample(state[1])
+
+                # Make results array for sampled states
+                num_samples = self.sampler.get_samples_num()
+
+                if num_samples == -1:
+                    num_samples = batch_size
+
+                sampled_state = [np.zeros((num_samples, self.shape[0])), np.zeros((num_samples, self.shape[1]))]
 
                 # Apply contrastive divergence steps
                 for i in range(max_divide):
@@ -262,57 +271,57 @@ class RBM(object):
                             dropoff_h_biases[i])
 
                     # Get the state back from the sub state
-                    for batch_id in range(batch_size):
+                    for batch_id in range(num_samples):
                         j = 0
                         for v_id in v_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            state[0][batch_id, v_id] = sub_state[0][batch_id, j]
+                            sampled_state[0][batch_id, v_id] = sub_state[0][batch_id, j]
                             j += 1
 
                         j = 0
                         for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            state[1][batch_id, h_id] = sub_state[1][batch_id, j]
+                            sampled_state[1][batch_id, h_id] = sub_state[1][batch_id, j]
                             j += 1
 
-                # Reconstruction statistics
-                state[0] = utils.sigmoid(np.dot(state[1], dropoff_weights.transpose()) + dropoff_v_bias)
-                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + label_influence)
-
                 if self.input_included is not None:
-                    label_state = utils.softmax(np.dot(state[1], self.label_weights.transpose()) + self.label_biases)
+                    label_state = utils.softmax(np.dot(sampled_state[1], self.label_weights.transpose()) + self.label_biases)
 
-                #update weights and biases
-                dw_tmp = np.dot(state_copy[0].transpose(), state_copy[1]) - np.dot(state[0].transpose(), state[1])
+                #update weights and biases 
+                dw_tmp = np.dot(state_copy[0].transpose(), state_copy[1]) / batch_size - np.dot(sampled_state[0].transpose(), sampled_state[1]) / num_samples
                 dw_tmp *= dropoff_matrix
                 dw_tmp -= utils.compute_weight_reg(self.weights, regularization_constant)
 
                 dw_tmp = momentum * dw + (1 - momentum) * dw_tmp
 
-                self.weights += (learning_rate / batch_size) * dw_tmp
+                self.weights += dw_tmp * learning_rate
                 dw = dw_tmp
 
-                tmp_bv = (learning_rate / batch_size) * np.sum(state_copy[0] - state[0], axis=0) * dropoff_v_mask
-                tmp_bh = (learning_rate / batch_size) * np.sum(state_copy[1] - state[1], axis=0) * dropoff_h_mask
+                tmp_bv = (np.sum(state_copy[0], axis=0) / batch_size - np.sum(sampled_state[0], axis=0) / num_samples) * dropoff_v_mask
+                tmp_bh = (np.sum(state_copy[1], axis=0) / batch_size - np.sum(sampled_state[1], axis=0) / num_samples) * dropoff_h_mask
 
                 tmp_bv = momentum * dbv + (1 - momentum) * tmp_bv
                 tmp_bh = momentum * dbh + (1 - momentum) * tmp_bh
 
-                self.visible_biases += tmp_bv
-                self.hidden_biases += tmp_bh
+                self.visible_biases += tmp_bv * learning_rate
+                self.hidden_biases += tmp_bh * learning_rate
 
                 dbv = tmp_bv
                 dbh = tmp_bh
 
                 if self.input_included is not None:
-                    ldw_tmp = np.dot(label_copy.transpose(), state_copy[1]) - np.dot(label_state.transpose(), state[1])
+                    ldw_tmp = np.dot(label_copy.transpose(), state_copy[1]) / batch_size - np.dot(label_state.transpose(), sampled_state[1]) / num_samples
                     ldw_tmp -= utils.compute_weight_reg(self.label_weights, regularization_constant)
                     ldw_tmp = momentum * ldw + (1 - momentum) * ldw_tmp
-                    self.label_weights += (learning_rate / batch_size) * ldw_tmp
+
+                    self.label_weights += ldw_tmp * learning_rate
                     ldw = ldw_tmp
 
-                    tmp_bl = (learning_rate / batch_size) * np.sum(label_copy - label_state, axis=0)
+                    tmp_bl = (np.sum(label_copy, axis=0) / batch_size - np.sum(label_state, axis=0) / num_samples)
                     tmp_bl = momentum * dbl + (1 - momentum) * tmp_bl
-                    self.label_biases += tmp_bl
+
+                    self.label_biases += tmp_bl * learning_rate
                     dbl = tmp_bl
+
+            self.epochs_trained += 1
 
         # Scale the weights so that the expected input to units works as expected
         self.weights *= scaling

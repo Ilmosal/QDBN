@@ -36,16 +36,19 @@ dbn_file = '../data/dbn_weight_reg_parameters.json'
 rbm_file = '../data/rbm_l2_params.json'
 
 def run():
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(filename='output.txt', filemode='w', level=logging.INFO)
     logging.info("Running program")
 
-    train_rbm_from_mnist_with_input_final()
+    #train_rbm_with_reduced_mnist()
+    #train_dbn_with_reduced_mnist()
+    #test_resize()
+    #train_rbm_from_mnist_with_input_final()
+    #sampling_effect_on_rbm()
     #test_sampling()
     #generate_mnist_plots()
     #generate_plots()
     #train_dbn_final()
     #finetune_dbn_final()
-    #test_dbn_final()
     #evaluate_dbn_mnist()
     #evaluate_rbm_with_input()
     #wake_sleep_dbn()
@@ -55,8 +58,13 @@ def run():
     #train_dbn_mnist()
     #finetune_dbn_mnist()
     #sample_dbn()
-    #test_dbn_mnist()
+    test_dbn_final()
     #test_softmax()
+
+def test_resize():
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
+
+    print(dataset.get_training_data_without_labels().shape)
 
 def test_sampling():
     n_size = 60
@@ -132,20 +140,21 @@ def generate_plots():
 
 def test_dbn_final():
     logging.info("Loading dataset")
-    batch_size = 100
-    data_vector_size = 784
+    batch_size = 500
+    data_vector_size = 196
 
-    epochs = [20]
-    fn_epochs = 3
-    lr = [0.5]
+    epochs = [10]
+    fn_epochs = 10
+    lr = [0.5, 0.1]
     cd = 1
-    mom = [0.5]
-    reg_con = [0.0001]
-    max_size = [392]
+    mom = [0.9, 0.95]
+    reg_con = [0.0]
+    max_size = [64, 98, 128]
 
-    sampler = ModelCD(cd)
+    sampler1 = ModelCD(1)
+    sampler10 = ModelCD(10)
 
-    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv')
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
     batches = dataset.get_batches(batch_size, include_labels = False)
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
@@ -161,12 +170,12 @@ def test_dbn_final():
                         dbn_file_name = "dbn_ptr_{0}_{1}".format(m, e)
                         logging.info("Creating DBN({0})".format(dbn_file_name))
                         logging.info("Params:\n lr: {0} mom: {1} rc: {2}".format(l, mo, r))
-                        dbn = DBN(shape=[data_vector_size, 784, 784, 784], label_shape = 10)
-                        dbn.greedy_pretrain(sampler, batches, learning_rate = l, epochs = e, cd_iter = cd, momentum=mo, regularization_constant = r, max_size = m, labels = False)
+                        dbn = DBN(shape=[data_vector_size, data_vector_size, data_vector_size, data_vector_size], label_shape = 10)
+                        dbn.greedy_pretrain(sampler1, batches, learning_rate = l, epochs = e, cd_iter = cd, momentum=mo, regularization_constant = r, max_size = m, labels = False)
 
                         logging.info("Training using wake sleep")
                         for i in range(fn_epochs):
-                            dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = 3, regularization_constant = r, momentum = 0.5)
+                            dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = 3, regularization_constant = r, momentum = 0.3)
 
                             logging.info("Evaluating the DBN on the evaluation set")
                             pr = dbn.evaluate(evaluation_set, evaluation_labels, 5)
@@ -218,7 +227,7 @@ def finetune_dbn_final():
                 for i in range(len(predictions)):
                     if np.argmax(predictions[i]) == np.argmax(evaluation_labels[i]):
                         pr += 1
-                
+
                 logging.info("Predict rate: {0}".format(pr / len(evaluation_set)))
                 pr_table.append(pr / len(evaluation_set))
 
@@ -363,11 +372,9 @@ def evaluate_dbn_mnist():
     max_s = [256, 128]
     mom = [0.6, 0.6]
 
-    for i in range(2): 
+    for i in range(2):
         logging.info("Training network with max_size of {0}".format(max_s[i]))
         for e in range(2, epochs+1):
-            print(e)
-            print(i)
             logging.info("Training DBN with {0} epochs".format(e+5))
             dbn = DBN(shape=[data_vector_size, 512, 512, 1024], label_shape = 10)
             dbn.greedy_pretrain(batches, learning_rate = lrs[i], epochs = e, cd_iter = 2, momentum=mom[i], regularization_constant=2**(-15), max_size = max_s[i])
@@ -485,12 +492,12 @@ def train_rbm_from_mnist_with_input_final():
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
 
-    lr = [0.01, 0.05, 0.1, 0.5]
-    mom = [0.5, 0.95]
-    reg_con = [0.0, 0.0001]
+    lr = [0.5, 0.1]
+    mom = [0.5, 0.9]
+    reg_con = [0.0001]
 
     # run for all interesting values of of p [784, 588, 392, 256, 128, 64]
-    for max_size in [784]:
+    for max_size in [64]:
         best_pr = 0.0
         most_fit_params = None
 
@@ -499,7 +506,7 @@ def train_rbm_from_mnist_with_input_final():
                 for r in reg_con:
                     logging.info("Training rbm for 3 epochs with params ({0} {1} {2} {3})".format(max_size, l, mo, r))
                     rbm = RBM(sampler, shape=[data_vector_size, hidden_layer_size], input_included = 10)
-                    rbm.train(batches, learning_rate=l, epochs=3, momentum=mo, regularization_constant = r, max_size = max_size)
+                    rbm.train(batches, learning_rate=l, epochs=4, momentum=mo, regularization_constant = r, max_size = max_size)
 
                     logging.info("Evaluating the RBM")
                     pr = rbm.evaluate(validation_set, validation_labels, 5)
@@ -526,6 +533,35 @@ def train_rbm_from_mnist_with_input_final():
         results_file.close()
 
         rbm.save_parameters("../models/rbm_final_{0}.json".format(max_size))
+
+def sampling_effect_on_rbm():
+    logging.info("Loading dataset")
+    batch_size = 100
+    data_vector_size = 784
+    hidden_layer_size = 784
+    epochs = [5]
+    rbm_filename = '../models/rbm_params.json'
+
+    samplers = [
+        ModelCD(1),
+        ModelCD(10)
+    ]
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv')
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+
+    for s in samplers:
+        rbm = RBM(s, shape=[data_vector_size, hidden_layer_size], input_included = 10)
+        logging.info("Creating rbm and training for {0} epochs".format(3))
+
+        for r in range(20):
+            rbm.train(batches, learning_rate=0.1, epochs=1, momentum=0.5, regularization_constant = 0.0, max_size = -1)
+            logging.info("PR on ev set: {0}".format(rbm.evaluate(evaluation_set, evaluation_labels, 5)))
+            logging.info("PR on tr set: {0}".format(rbm.evaluate(tr_set, tr_labels, 5)))
 
 def train_rbm_from_mnist_no_input():
     logging.info("Loading dataset")
@@ -568,5 +604,85 @@ def train_rbm_from_mnist_with_input():
 
     rbm.save_parameters(rbm_filename)
 
+def train_rbm_with_reduced_mnist():
+    logging.info("Loading dataset")
+    batch_size = 100
+    data_vector_size = 196
+    hidden_layer_size = 196
+    epochs = [5]
+
+    sampler = None
+    dwave = False
+
+    if dwave:
+        sampler = ModelDWave(
+            layout="pegasus",
+            source="dwave",
+            parallel=4,
+            beta=1.0,
+            num_reads=100,
+            s_pause=0.5
+            )
+    else:
+        sampler = ModelCD(1)
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    rbm = RBM(sampler, shape=[data_vector_size, hidden_layer_size], input_included = 10)
+
+    logging.info("Training this rbm now")
+
+    for e in range(20):
+        rbm.train(batches, learning_rate=0.01, epochs=1, momentum=0.5, regularization_constant = 0.0)
+
+        logging.info("PR on ev set: {0}".format(rbm.evaluate(evaluation_set, evaluation_labels, 5)))
+        logging.info("PR on tr set: {0}".format(rbm.evaluate(tr_set, tr_labels, 5)))
+
+def train_dbn_with_reduced_mnist():
+    logging.info("Loading dataset")
+    batch_size = 100
+    data_vector_size = 196
+    hidden_layer_size = 196
+    epochs = [5]
+
+    sampler = None
+    dwave = False
+
+    if dwave:
+        sampler = ModelDWave(
+            layout="pegasus",
+            source="dwave",
+            parallel=4,
+            beta=1.0,
+            num_reads=100,
+            s_pause=0.5
+            )
+    else:
+        sampler = ModelCD(1)
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+
+    logging.info("Creating dbm and training for {0}".format(5))
+    dbn = DBN(shape=[data_vector_size, data_vector_size, data_vector_size, data_vector_size], label_shape = 10)
+
+    # Pretraining
+    dbn.greedy_pretrain(sampler, batches, learning_rate = 0.1, epochs = 10, cd_iter = 1, momentum=0.95, regularization_constant = 0.0, max_size = 64, labels = False)
+
+    # Wakesleep
+    for i in range(10):
+        dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = 3, regularization_constant = r, momentum = 0.3)
+        logging.info("PR on ev set: {0}".format(dbm.evaluate(evaluation_set, evaluation_labels, 5)))
+        logging.info("PR on tr set: {0}".format(dbm.evaluate(tr_set, tr_labels, 5)))
+
 if __name__ == "__main__":
     run()
+

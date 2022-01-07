@@ -18,3 +18,11 @@ class Model:
         self.weights = weights
         self.visible = visible
         self.hidden = hidden
+
+    def get_samples_num(self):
+        """
+        Get the amount of samples estimate_model returns
+        """
+        return -1
+
+
