@@ -132,3 +132,6 @@ dmypy.json
 data/*
 models/*
 results/*
+src/sampling/destination_folders.txt
+src/produce_plots.py
+scr/*.txt

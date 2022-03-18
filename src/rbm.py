@@ -8,20 +8,25 @@ import json
 import time
 
 from softmax import Softmax
+from sampling.model_cd import ModelCD
 
 class RBM(object):
     """
     Base class for the rbm object
     """
-    def __init__(self, sampler, shape = [1,1], parameters = None, input_included = None):
+    def __init__(self, sampler = None, shape = [1,1], parameters = None, input_included = None, weight_dist = 0.01):
         if not isinstance(shape,list) and len(shape) != 2:
             logging.error("Shape not an array with two values")
+
+        if sampler is None:
+            self.sampler = ModelCD(1)
+        else:
+            self.sampler = sampler
 
         self.metrics = []
         self.epochs_trained = 0
         self.state = np.array([])
 
-        self.sampler = sampler
 
         if parameters is not None:
             if type(parameters) is str:
@@ -40,7 +45,7 @@ class RBM(object):
             self.shape = shape
 
             # Weights initialized from gaussian with stdDev=0.1/sqrt(n_visible*n_hidden) 
-            self.weights = np.random.normal(0.0, 0.01, [self.shape[0], self.shape[1]])
+            self.weights = np.random.normal(0.0, weight_dist, [self.shape[0], self.shape[1]])
 
             # Biases initialized at zeros
             self.visible_biases = np.zeros(self.shape[0], dtype=float)
@@ -162,7 +167,67 @@ class RBM(object):
 
         return dropoff_w_matrices, dropoff_h_biases, dropoff_v_biases, drop_w_mask, drop_h_mask, drop_v_mask, max_divide
 
-    def train(self, batches, learning_rate, epochs, cd_iter=1, momentum = 0, regularization_constant = 0.0, max_size = -1, partial_groups = False):
+    def create_sampler_parameters(self, dropoff_params, h_ids, v_ids, max_size, label_mode = "passive"):
+        """
+        Create sampler parameters with certain dropoff parameters
+        """
+        if label_mode not in ['passive', 'active']:
+            raise Exception('incorrect label mode passed for sampler parameters: {0}'.format(label_mode))
+
+        sampler_params = {}
+
+        dropoff_w_matrices = dropoff_params[0]
+        dropoff_h_biases = dropoff_params[1]
+        dropoff_v_biases = dropoff_params[2]
+        dropoff_matrix = dropoff_params[3]
+        dropoff_h_mask = dropoff_params[4]
+        dropoff_v_mask = dropoff_params[5]
+        max_divide = dropoff_params[6]
+
+        # Create the dropoff weight matrix and scale up using scaling
+        dropoff_weights = dropoff_matrix * self.weights
+        dropoff_v_bias = self.visible_biases * dropoff_v_mask
+        dropoff_h_bias = self.hidden_biases * dropoff_h_mask
+        label_influence = self.hidden_biases * 0.0
+
+        # Compute the max size of the sampler
+        tmp_max_size = max_size
+
+        if max_size == -1:
+            tmp_max_size = self.shape[1]
+
+        # Add passive label influence to hidden biases
+        if self.input_included is not None and label_mode == "passive":
+            label_influence = np.dot(np.zeros(self.input_included) + 1.0, self.label_weights)
+
+            for i in range(max_divide):
+                for j, h_id in enumerate(h_ids[i*tmp_max_size:(i+1)*tmp_max_size]):
+                    dropoff_h_biases[i][j] += label_influence[h_id]
+
+            dropoff_h_bias += label_influence
+
+        if self.sampler.model_id == "model_cd":
+            sampler_params['weights'] = dropoff_weights
+            sampler_params['visible'] = dropoff_v_bias
+            sampler_params['hidden'] = dropoff_h_bias
+            sampler_params['label_mode'] = label_mode
+
+            if label_mode == "active":
+                sampler_params['label_weights'] = self.label_weights
+                sampler_params['label_biases'] = self.label_biases
+
+        elif self.sampler.model_id == "model_dwave":
+            sampler_params['weights'] = dropoff_w_matrices
+            sampler_params['visible'] = dropoff_v_biases
+            sampler_params['hidden'] = dropoff_h_biases
+            sampler_params['h_ids'] = h_ids
+            sampler_params['v_ids'] = v_ids
+            sampler_params['max_size'] = tmp_max_size
+            sampler_params['max_divide'] = max_divide
+
+        return sampler_params, dropoff_weights, dropoff_h_bias
+
+    def train(self, batches, learning_rate, epochs, momentum = 0, regularization_constant = 0.0, max_size = -1, label_mode = 'passive', partial_groups = False, log_batches = False):
         """
         Train RBM with data.
         """
@@ -188,7 +253,10 @@ class RBM(object):
 
         for e in range(epochs):
             logging.info("Epoch n. {0}".format(self.epochs_trained + 1))
-            for batch in batches:
+            for cur_batch_num, batch in enumerate(batches):
+                if log_batches:
+                    logging.info("Batch: {0}/{1}".format(cur_batch_num + 1, len(batches)))
+
                 # Clamp visible to data. Separate labels from batch if included
                 if self.input_included is not None:
                     state[0] = copy.deepcopy(batch[:,:-self.input_included])
@@ -202,28 +270,24 @@ class RBM(object):
                 # Create dropoff parameters
                 dropoff_params = self.create_dropoff_parameters(max_size, v_ids, h_ids)
 
-                dropoff_w_matrices = dropoff_params[0]
-                dropoff_h_biases = dropoff_params[1]
-                dropoff_v_biases = dropoff_params[2]
+                # Separating dropoff parameters required for learning
                 dropoff_matrix = dropoff_params[3]
                 dropoff_h_mask = dropoff_params[4]
                 dropoff_v_mask = dropoff_params[5]
-                max_divide = dropoff_params[6]
 
-                # Create the dropoff weight matrix and scale up using scaling
-                dropoff_weights = dropoff_matrix * self.weights
-                dropoff_v_bias = self.visible_biases * dropoff_v_mask
-                dropoff_h_bias = self.hidden_biases * dropoff_h_mask
-                label_influence = self.hidden_biases * 0.0
+                # Create sampler parameters depending on the sampler in question
+                sampler_params, dropoff_weights, dropoff_h_bias = self.create_sampler_parameters(dropoff_params, h_ids, v_ids, max_size, label_mode)
 
-                # compute label influence if included
-                if self.input_included is not None:
-                    label_influence = np.dot(np.zeros(self.input_included) + 0.5, self.label_weights)
-                    label_copy = copy.deepcopy(label_state)
-
-                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + label_influence)
+                # Create the hidden states 
+                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias)
                 state_copy = copy.deepcopy(state)
                 state[1] = utils.sample(state[1])
+
+                sampler_params['dataset'] = state
+
+                # Make copy of label states
+                if self.input_included:
+                    label_copy = copy.deepcopy(label_state)
 
                 # Make results array for sampled states
                 num_samples = self.sampler.get_samples_num()
@@ -231,94 +295,46 @@ class RBM(object):
                 if num_samples == -1:
                     num_samples = batch_size
 
-                sampled_state = [np.zeros((num_samples, self.shape[0])), np.zeros((num_samples, self.shape[1]))]
+                # Sample for the model distribution states using the dedicated sampler
+                sampled_state = self.sample_model_distribution(state, sampler_params)
 
-                # Apply contrastive divergence steps
-                for i in range(max_divide):
-                    tmp_max_size = max_size
-
-                    if max_size == -1:
-                        tmp_max_size = self.shape[1]
-
-                    # Add passive label influence to hidden biases
-                    if self.input_included is not None:
-                        j = 0
-                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            dropoff_h_biases[i][j] += label_influence[h_id]
-                            j += 1
-                        j = 0
-
-                    sub_state = [np.zeros([batch_size, tmp_max_size]), np.zeros([batch_size, tmp_max_size])]
-
-                    # Create the sub state for the dropoff network
-                    for batch_id in range(batch_size):
-                        j = 0
-                        for v_id in v_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            sub_state[0][batch_id, j] = state[0][batch_id, v_id]
-                            j += 1
-
-                        j = 0
-
-                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            sub_state[1][batch_id, j] = state[1][batch_id, h_id]
-                            j += 1
-
-                    # Sample the states for the model distribution
-                    sub_state = self.sample_model_distribution(
-                            sub_state,
-                            dropoff_w_matrices[i],
-                            dropoff_v_biases[i],
-                            dropoff_h_biases[i])
-
-                    # Get the state back from the sub state
-                    for batch_id in range(num_samples):
-                        j = 0
-                        for v_id in v_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            sampled_state[0][batch_id, v_id] = sub_state[0][batch_id, j]
-                            j += 1
-
-                        j = 0
-                        for h_id in h_ids[i*tmp_max_size:(i+1)*tmp_max_size]:
-                            sampled_state[1][batch_id, h_id] = sub_state[1][batch_id, j]
-                            j += 1
-
+                # Get the label states
                 if self.input_included is not None:
                     label_state = utils.softmax(np.dot(sampled_state[1], self.label_weights.transpose()) + self.label_biases)
 
-                #update weights and biases 
-                dw_tmp = np.dot(state_copy[0].transpose(), state_copy[1]) / batch_size - np.dot(sampled_state[0].transpose(), sampled_state[1]) / num_samples
-                dw_tmp *= dropoff_matrix
-                dw_tmp -= utils.compute_weight_reg(self.weights, regularization_constant)
+                # Update weights and biases 
+                dw_tmp = (np.dot(state_copy[0].transpose(), state_copy[1]) / batch_size - np.dot(sampled_state[0].transpose(), sampled_state[1]) / num_samples)
+                dw_tmp += utils.compute_weight_reg(self.weights, regularization_constant)
 
-                dw_tmp = momentum * dw + (1 - momentum) * dw_tmp
+                dw_tmp = momentum * dw + dw_tmp * learning_rate
 
-                self.weights += dw_tmp * learning_rate
+                self.weights += dw_tmp * dropoff_matrix
                 dw = dw_tmp
 
-                tmp_bv = (np.sum(state_copy[0], axis=0) / batch_size - np.sum(sampled_state[0], axis=0) / num_samples) * dropoff_v_mask
-                tmp_bh = (np.sum(state_copy[1], axis=0) / batch_size - np.sum(sampled_state[1], axis=0) / num_samples) * dropoff_h_mask
+                tmp_bv = (np.sum(state_copy[0], axis=0) / batch_size - np.sum(sampled_state[0], axis=0) / num_samples)
+                tmp_bh = (np.sum(state_copy[1], axis=0) / batch_size - np.sum(sampled_state[1], axis=0) / num_samples)
 
-                tmp_bv = momentum * dbv + (1 - momentum) * tmp_bv
-                tmp_bh = momentum * dbh + (1 - momentum) * tmp_bh
+                tmp_bv = momentum * dbv + tmp_bv * learning_rate
+                tmp_bh = momentum * dbh + tmp_bh * learning_rate
 
-                self.visible_biases += tmp_bv * learning_rate
-                self.hidden_biases += tmp_bh * learning_rate
+                self.visible_biases += tmp_bv * dropoff_v_mask
+                self.hidden_biases += tmp_bh * dropoff_h_mask
 
                 dbv = tmp_bv
                 dbh = tmp_bh
 
                 if self.input_included is not None:
                     ldw_tmp = np.dot(label_copy.transpose(), state_copy[1]) / batch_size - np.dot(label_state.transpose(), sampled_state[1]) / num_samples
-                    ldw_tmp -= utils.compute_weight_reg(self.label_weights, regularization_constant)
-                    ldw_tmp = momentum * ldw + (1 - momentum) * ldw_tmp
+                    ldw_tmp += utils.compute_weight_reg(self.label_weights, regularization_constant)
+                    ldw_tmp = momentum * ldw + ldw_tmp * learning_rate
 
-                    self.label_weights += ldw_tmp * learning_rate
+                    self.label_weights += ldw_tmp
                     ldw = ldw_tmp
 
                     tmp_bl = (np.sum(label_copy, axis=0) / batch_size - np.sum(label_state, axis=0) / num_samples)
-                    tmp_bl = momentum * dbl + (1 - momentum) * tmp_bl
+                    tmp_bl = momentum * dbl + tmp_bl * learning_rate
 
-                    self.label_biases += tmp_bl * learning_rate
+                    self.label_biases += tmp_bl
                     dbl = tmp_bl
 
             self.epochs_trained += 1
@@ -326,14 +342,11 @@ class RBM(object):
         # Scale the weights so that the expected input to units works as expected
         self.weights *= scaling
 
-    def sample_model_distribution(self, state, weights, v_biases, h_biases):
+    def sample_model_distribution(self, state, sampler_parameters):
         """
-        Apply contrastive divergence to approximate the gradient of the cost function
+        Apply contrastive divergence to approximate the gradient of the cost function.
         """
-        self.sampler.set_model_parameters(weights, v_biases, h_biases)
-
-        if self.sampler.model_id == 'model_cd':
-            self.sampler.set_dataset(state[0])
+        self.sampler.set_model_parameters(sampler_parameters)
 
         return self.sampler.estimate_model()
 
@@ -410,51 +423,232 @@ class RBM(object):
 
         return status_string
 
+    def compute_bias_statistics(self):
+        """
+        Compute statistics about the bias parameters of the rbm
+        """
+        bias_statistics = {}
+
+        min_val = 99999.0
+        max_val = -99999.0
+        total_val = 0.0
+
+        for b in np.nditer(self.hidden_biases):
+            if b > max_val:
+                max_val = b
+            if b < min_val:
+                min_val = b
+
+            total_val += b
+
+        avg_hidden_bias = total_val / np.size(self.hidden_biases)
+
+        bias_statistics['avg_hb'] = avg_hidden_bias
+        bias_statistics['max_hb'] = max_val
+        bias_statistics['min_hb'] = min_val
+        bias_statistics['hidden_biases'] = np.copy(self.hidden_biases)
+
+        min_val = 99999.0
+        max_val = -99999.0
+        total_val = 0.0
+
+        for b in np.nditer(self.visible_biases):
+            if b > max_val:
+                max_val = b
+            if b < min_val:
+                min_val = b
+
+            total_val += b
+
+        avg_visible_bias = total_val / np.size(self.visible_biases)
+
+        bias_statistics['avg_vb'] = avg_visible_bias
+        bias_statistics['max_vb'] = max_val
+        bias_statistics['min_vb'] = min_val
+        bias_statistics['visible_biases'] = np.copy(self.visible_biases)
+
+        if self.input_included is not None:
+            min_val = 99999.0
+            max_val = -99999.0
+            total_val = 0.0
+
+            for b in np.nditer(self.label_biases):
+                if b > max_val:
+                    max_val = b
+                if b < min_val:
+                    min_val = b
+
+                total_val += b
+
+            avg_label_bias = total_val / np.size(self.label_biases)
+
+            bias_statistics['avg_lb'] = avg_label_bias
+            bias_statistics['max_lb'] = max_val
+            bias_statistics['min_lb'] = min_val
+            bias_statistics['label_biases'] = np.copy(self.label_biases)
+
+        return bias_statistics
+
+    def compute_weight_statistics(self):
+        """
+        Compute statistics about the weight parameters of the rbm
+        """
+        weight_statistics = {}
+
+        min_val = 99999.0
+        max_val = -99999.0
+        total_val = 0.0
+
+        for w in np.nditer(self.weights):
+            if w > max_val:
+                max_val = w
+            if w < min_val:
+                min_val = w
+
+            total_val += w
+
+        avg_w = total_val / np.size(self.weights)
+
+        weight_statistics['avg_w'] = avg_w
+        weight_statistics['max_w'] = max_val
+        weight_statistics['min_w'] = min_val
+        weight_statistics['weights'] = np.copy(self.weights)
+
+        if self.input_included is not None:
+            min_val = 99999.0
+            max_val = -99999.0
+            total_val = 0.0
+
+            for w in np.nditer(self.label_weights):
+                if w > max_val:
+                    max_val = w
+                if w < min_val:
+                    min_val = w
+
+                total_val += w
+
+            avg_lw = total_val / np.size(self.label_weights)
+
+            weight_statistics['avg_lw'] = avg_lw
+            weight_statistics['max_lw'] = max_val
+            weight_statistics['min_lw'] = min_val
+            weight_statistics['label_weights'] = np.copy(self.label_weights)
+
+
+        return weight_statistics
+
+    def compute_reconstruction_error(self, dataset, labels = None):
+        """
+        Compute the reconstruction error for a given dataset.
+        """
+        reconstruction_statistics = {}
+
+        hid_values = self.infer_hidden(dataset, False, labels)
+        vis_values = self.infer_visible(hid_values, True)
+
+        reconstruction_error = (dataset - vis_values)**2
+        total_error = 0
+        min_error = 99999.0
+        max_error = 0.0
+
+        for r in reconstruction_error:
+            error = np.sum(r)
+
+            if error > max_error:
+                max_error = error
+            if error < min_error:
+                min_error = error
+            total_error += error
+
+        avg_error = total_error / dataset.shape[0]
+
+        reconstruction_statistics['reconstruction_error'] = reconstruction_error
+        reconstruction_statistics['avg_error'] = avg_error
+        reconstruction_statistics['min_error'] = min_error
+        reconstruction_statistics['max_error'] = max_error
+
+        return reconstruction_statistics
+
+    def log_statistics(self, dataset = None, labels = None, n_cycles = 5):
+        """
+        Function for logging statistics about the RBM
+        """
+        w_stat = self.compute_weight_statistics()
+        b_stat = self.compute_bias_statistics()
+
+        logging.info("Weight statistics -  avg: {0} min: {1} max:{2}".format(w_stat['avg_w'], w_stat['min_w'], w_stat['max_w']))
+
+        if self.input_included is not None:
+            logging.info("Label weight statistics -  avg: {0} min: {1} max:{2}".format(w_stat['avg_lw'], w_stat['min_lw'], w_stat['max_lw']))
+
+        logging.info("Visible bias statistics -  avg: {0} min: {1} max:{2}".format(b_stat['avg_vb'], b_stat['min_vb'], b_stat['max_vb']))
+        logging.info("Hidden bias statistics -  avg: {0} min: {1} max:{2}".format(b_stat['avg_hb'], b_stat['min_hb'], b_stat['max_hb']))
+
+        if self.input_included is not None:
+            logging.info("Label bias statistics -  avg: {0} min: {1} max:{2}".format(b_stat['avg_lb'], b_stat['min_lb'], b_stat['max_lb']))
+
+        if dataset is not None:
+            r_stat = self.compute_reconstruction_error(dataset, labels)
+            logging.info("Reconstruction statistics -  avg: {0} min: {1} max:{2}".format(r_stat['avg_error'], r_stat['min_error'], r_stat['max_error']))
+
+            if self.input_included is not None:
+                logging.info("Prediction rate on dataset: {0}".format(self.evaluate(dataset, labels, n_cycles)))
+
+    def store_statistics(self, dataset, file_name):
+        """
+        Function for collecting statistics about the RBM and storing these into a file
+        """
+        w_stat = self.compute_weight_statistics()
+        b_stat = self.compute_bias_statistics()
+
+        if dataset is not None:
+            r_stat = self.compute_reconstruction_error(dataset, labels)
+        else:
+            r_stat = None
+
+        stat_json = {
+                'b_stat':  b_stat,
+                'w_stat': w_stat,
+                'r_stat': r_stat
+        }
+
+        with open(file_name, 'w') as stat_file:
+            json.dump(stat_json)
+
     def load_parameters(self, parameter_file_location):
         """
         Function for loading rbm parameters
         """
         logging.info("Loading parameters from file")
 
-        try:
-            parameter_file = open(parameter_file_location, 'r')
-            parameters = json.load(parameter_file)
-            parameter_file.close()
+        with open(parameter_file_location, 'r') as p_file:
+            parameters = json.load(p_file)
 
-            self.shape = parameters['shape']
-            self.weights = np.array(parameters['weights'])
-            self.visible_biases = np.array(parameters['visible_biases'])
-            self.hidden_biases = np.array(parameters['hidden_biases'])
-            self.input_included = parameters['input_included']
-            self.label_weights = np.array(parameters['label_weights'])
-            self.label_biases = np.array(parameters['label_biases'])
-        except Exception as e:
-            logging.error('Failed to load parameters due to error:')
-            logging.error(e)
-            return
-
-        logging.info('Parameters successfully read')
+        self.shape = parameters['shape']
+        self.weights = np.array(parameters['weights'])
+        self.visible_biases = np.array(parameters['visible_biases'])
+        self.hidden_biases = np.array(parameters['hidden_biases'])
+        self.input_included = parameters['input_included']
+        self.label_weights = np.array(parameters['label_weights'])
+        self.label_biases = np.array(parameters['label_biases'])
 
     def save_parameters(self, parameter_file):
         """
         Store rbm parameters into a file.
         """
         logging.info("Storing parameters into a file")
+
         parameters = {
             'shape': self.shape,
             'weights': self.weights.tolist(),
             'visible_biases':self.visible_biases.tolist(),
             'hidden_biases':self.hidden_biases.tolist(),
-            'input_included':self.input_included,
-            'label_weights':self.label_weights.tolist(),
-            'label_biases':self.label_biases.tolist()
+            'input_included':self.input_included
         }
 
-        try:
-            parameter_file = open(parameter_file, 'w')
-            json.dump(parameters, parameter_file)
-            parameter_file.close()
-        except Exception as e:
-            logging.error('Failed to save parameters due to error:')
-            logging.error(e)
+        if self.input_included:
+            parameters['label_weights'] = self.label_weights.tolist()
+            parameters['label_biases'] = self.label_biases.tolist()
 
+        with open(parameter_file, 'w') as p_file:
+            json.dump(parameters, p_file)

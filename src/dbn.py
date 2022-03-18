@@ -46,7 +46,7 @@ class DBN(object):
         else:
             self.load_parameters(parameter_file)
 
-    def greedy_pretrain(self, sampler, batches, learning_rate, epochs, cd_iter = 1, momentum = 0.0, regularization_constant = 0.0, max_size = -1, labels = False):
+    def greedy_pretrain(self, sampler, batches, learning_rate, epochs, momentum = 0.0, regularization_constant = 0.0, max_size = -1, labels = False):
         """
         Function for greedily pre-training a stack of RBMs to initialize the weight parameters of the DBN.
         """
@@ -102,7 +102,6 @@ class DBN(object):
                     data_set_cpy,
                     learning_rate = learning_rate,
                     epochs = epochs,
-                    cd_iter = cd_iter,
                     momentum = momentum,
                     regularization_constant = regularization_constant,
                     max_size = max_size)
@@ -173,7 +172,7 @@ class DBN(object):
                 # Step 2: Gibbs sampling in the top level undirected associative memory
                 sleep_probs = copy.deepcopy(wake_probs)
                 sleep_states = copy.deepcopy(wake_states)
-                
+
                 for i in range(cycles):
                     sleep_probs[-2] = sigmoid(np.dot(sleep_states[-1], self.weights[-1].transpose()) + self.gen_biases[-1])
                     sleep_states[-2] = sample(sleep_probs[-2])
@@ -214,40 +213,40 @@ class DBN(object):
                     nabla_weights[i] = np.sum(np.reshape(sleep_states[i], [batch_size, len(self.biases[i]), 1]) * np.reshape((sleep_states[i+1] - predict_sleep_probs[i+1]), [batch_size, 1, len(self.biases[i+1])]), axis = 0) - compute_weight_reg(self.weights[i], regularization_constant)
 
                 for i in range(len(self.shape) - 2):
-                    nabla_weights[i] = momentum * dw[i] + (1 - momentum) * nabla_weights[i]
+                    nabla_weights[i] = momentum * dw[i] + nabla_weights[i]
 
                     self.weights[i] += (learning_rate / batch_size) * nabla_weights[i]
                     dw[i] = nabla_weights[i]
 
                     b_tmp = (learning_rate / batch_size) * np.sum(sleep_states[i+1] - predict_sleep_probs[i+1], axis = 0)
-                    b_tmp = momentum * bdw[i+1] * (1 - momentum) * b_tmp
+                    b_tmp = momentum * bdw[i+1] * b_tmp
                     self.biases[i+1] += b_tmp
                     bdw[i+1] = b_tmp
 
                 # Update generative parameters
                 for i in range(len(self.shape) - 2):
-                    nabla_gdw[i] = momentum * gdw[i] + (1 - momentum) * nabla_gdw[i]
+                    nabla_gdw[i] = momentum * gdw[i] + nabla_gdw[i]
 
                     self.gen_weights[i] += (learning_rate / batch_size) * nabla_gdw[i]
                     gdw[i] = nabla_gdw[i]
 
                     gb_tmp = (learning_rate / batch_size) * np.sum(wake_states[i] - predict_wake_probs[i], axis = 0)
-                    gb_tmp = momentum * gbdw[i] + (1 - momentum) * gb_tmp
+                    gb_tmp = momentum * gbdw[i] + gb_tmp
                     self.gen_biases[i] += gb_tmp
                     gbdw[i] = gb_tmp
 
                 # Update associative parameters
-                nabla_label_weights = momentum * ldw + (1 - momentum) * nabla_label_weights
+                nabla_label_weights = momentum * ldw + nabla_label_weights
 
                 self.label_weights += (learning_rate / batch_size) * nabla_label_weights
                 ldw = nabla_label_weights
 
                 lb_tmp = (learning_rate / batch_size) * np.sum(labels_cpy - label_probs, axis = 0)
-                lb_tmp = momentum * lbdw + (1 - momentum) * lb_tmp
+                lb_tmp = momentum * lbdw + lb_tmp
                 self.label_biases += lb_tmp
                 lbdw = lb_tmp
 
-                nabla_weights[-1] = momentum * dw[-1] + (1 - momentum) * nabla_weights[-1]
+                nabla_weights[-1] = momentum * dw[-1] + nabla_weights[-1]
 
                 self.weights[-1] += (learning_rate / batch_size) * nabla_weights[-1]
                 dw[-1] = np.copy(nabla_weights[-1])
@@ -255,8 +254,8 @@ class DBN(object):
                 b_tmp = (learning_rate / batch_size) * np.sum(wake_states[-1] - sleep_states[-1], axis = 0)
                 gb_tmp = (learning_rate / batch_size) * np.sum(wake_states[-2] - sleep_states[-2], axis = 0)
 
-                b_tmp = momentum * bdw[-1] + (1 - momentum) * b_tmp
-                gb_tmp = momentum * gbdw[-1] + (1 - momentum) * gb_tmp
+                b_tmp = momentum * bdw[-1] +  b_tmp
+                gb_tmp = momentum * gbdw[-1] + gb_tmp
 
                 self.biases[-1] += b_tmp
                 self.gen_biases[-1] += gb_tmp

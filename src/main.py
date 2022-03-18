@@ -13,12 +13,13 @@ TODO:
     - [X] Evaluating the results
     - [X] Integrate the sampling module
     - [X] Make DWave sampling work
-    - [ ] Evaluate results of quantum sampling
+    - [X] Evaluate results of quantum sampling
 """
 from rbm import RBM
 from dbn import DBN
-from dataset import MnistDataset
+from dataset import MnistDataset, BarsAndStripes
 from softmax import Softmax
+from utils import evaluate_samplers
 
 from sampling.utils import l1_between_models
 from sampling.model_cd import ModelCD
@@ -36,9 +37,16 @@ dbn_file = '../data/dbn_weight_reg_parameters.json'
 rbm_file = '../data/rbm_l2_params.json'
 
 def run():
-    logging.basicConfig(filename='output.txt', filemode='w', level=logging.INFO)
+    #logging.basicConfig(filename='bar_output.txt', filemode='w', level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     logging.info("Running program")
 
+    #test_sampling_evaluation()
+    #test_statistics()
+    #test_two_part_training()
+    test_bars_and_stripes()
+    #test_bars_and_stripes_dbn()
+    #train_rbm_final()
     #train_rbm_with_reduced_mnist()
     #train_dbn_with_reduced_mnist()
     #test_resize()
@@ -58,8 +66,156 @@ def run():
     #train_dbn_mnist()
     #finetune_dbn_mnist()
     #sample_dbn()
-    test_dbn_final()
+    #test_dbn_final()
     #test_softmax()
+
+def test_sampling_evaluation():
+    logging.info('testing sampling evaluation ')
+
+    batch_size = 1000
+    data_vector_size = 64
+    hidden_layer_size = 64
+    epochs = 10
+
+    dwave_sampler = ModelDWave(
+            layout="pegasus",
+            source="aws",
+            beta=3.5,
+            num_reads=400,
+            s_pause=0.5)
+
+    sampler = ModelCD(1000, use_state=False)
+
+    dataset = BarsAndStripes(8, 0.5, use_offsets = False, seed = 10000)
+    batches = dataset.get_batches(batch_size, include_labels = False)
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+
+    rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = None)
+
+    res = evaluate_samplers(dwave_sampler, sampler, rbm, tr_set)
+
+    logging.info("Sampling results: {0}".format(res))
+
+def test_statistics():
+    logging.info("Creating dataset")
+
+    batch_size = 100
+    data_vector_size = 256
+    hidden_layer_size = 256
+    epochs = 30
+    sampler = ModelCD(1)
+
+    dataset = BarsAndStripes(16, 0.5, use_offsets = True, seed = 10000)
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+
+    logging.info("Training this rbm now")
+    for max_size in [128]:
+        rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2)
+
+        rbm.log_statistics(evaluation_set, evaluation_labels)
+
+        for e in range(epochs):
+            rbm.train(batches, learning_rate=0.1, regularization_constant = 0.01, epochs=1, momentum=0.5, max_size = max_size)
+            pr = rbm.evaluate(evaluation_set, evaluation_labels, 5)
+            logging.info("Prediction rate: {0}".format(pr))
+            pr = rbm.evaluate(tr_set, tr_labels, 1)
+            logging.info("Prediction rate: {0}".format(pr))
+
+            rbm.log_statistics(evaluation_set, evaluation_labels)
+
+def test_bars_and_stripes():
+    logging.info("Creating dataset")
+
+    batch_size = 100
+    data_vector_size = 64
+    hidden_layer_size = 64
+    epochs = 10
+    sampler = None
+    dwave = False
+
+    rbm_file_name = "./models/max_size_{0}/c_rbm_{0}_epoch_{1}.json"
+
+    if dwave:
+        sampler = ModelDWave(
+            layout="pegasus",
+            source="aws",
+            beta=3.5,
+            num_reads=400,
+            s_pause=0.45
+            )
+    else:
+        sampler = ModelCD(1, use_state = True)
+
+    dataset = BarsAndStripes(8, 0.7, use_offsets = False, seed = 10000)
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+
+    logging.info("Training this rbm now")
+    for max_size in [64]:
+        rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32)
+        rbm.log_statistics(evaluation_set, evaluation_labels)
+
+        for e in range(epochs):
+            rbm.train(batches, learning_rate=0.01, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=max_size, label_mode='passive')
+            rbm.log_statistics(evaluation_set, evaluation_labels)
+            rbm.save_parameters(rbm_file_name.format(max_size, e))
+
+def test_bars_and_stripes_dbn():
+    logging.info("Creating dataset")
+    dataset = BarsAndStripes(16, 0.75, use_offsets = True, seed = 10000)
+
+    batch_size = 100
+    data_vector_size = 256
+    hidden_layer_size = 256
+    max_size = 128
+    epochs = 20
+    sampler = None
+    dwave = False
+
+    #rbm_file_name = "./models/max_size_{0}/rbm_{0}_epoch_{1}.json"
+
+    if dwave:
+        sampler = ModelDWave(
+            layout="pegasus",
+            source="aws",
+            parallel=3,
+            beta=3.0,
+            num_reads=400,
+            s_pause=0.5
+            )
+    else:
+        sampler = ModelCD(1)
+
+    batches = dataset.get_batches(batch_size, include_labels = False)
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    f_batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+
+    dbn = DBN(shape=[data_vector_size, data_vector_size, data_vector_size, data_vector_size], label_shape = 2)
+    dbn.greedy_pretrain(sampler, batches, learning_rate = 0.1, epochs = epochs, momentum=0.5, regularization_constant = 0.1, max_size = 64, labels = False)
+
+    logging.info("Training using wake sleep")
+    for i in range(30):
+        dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = 3, regularization_constant = 0.0, momentum = 0.3)
+        logging.info("Evaluating the DBN on the evaluation set")
+        pr = dbn.evaluate(evaluation_set, evaluation_labels, 5)
+        logging.info("Predict rate: {0}".format(pr))
+
+        logging.info("Evaluating the DBN on the training set")
+        pr = dbn.evaluate(tr_set, tr_labels, 5)
+        logging.info("Predict rate: {0}".format(pr))
 
 def test_resize():
     dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
@@ -217,6 +373,7 @@ def finetune_dbn_final():
             dbn = DBN(parameter_file = dbn_load_file)
 
             logging.info("Training using wake sleep")
+
             for i in range(fn_epochs):
                 dbn.wakesleep_algorithm(batches, lr, epochs = 1, cycles = cd, momentum = mom, regularization_constant = reg_con)
 
@@ -231,31 +388,84 @@ def finetune_dbn_final():
                 logging.info("Predict rate: {0}".format(pr / len(evaluation_set)))
                 pr_table.append(pr / len(evaluation_set))
 
-            logging.info("Storing data into files") 
+            logging.info("Storing data into files")
             dbn.save_parameters(dbn_file_name)
             pr_file = open(pr_file_name, "w")
+
             for p in pr_table:
                 pr_file.write("{0}\n".format(p))
+
             pr_file.close()
+
+def train_rbm_final():
+    logging.info("Loading dataset")
+    batch_size = 600
+    data_vector_size = 784
+    validation_size = 16
+
+    epochs = 10
+    lr = [0.05]
+    cd = 1
+    mom = [0.5]
+    reg_con = [0.0]
+    max_size = [-1]
+
+    sampler1 = ModelCD(1)
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', False)
+    batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+
+    for m in max_size:
+        best_pr = 0.0
+        most_fit_params = None
+
+        for l in lr:
+            for mo in mom:
+                for r in reg_con:
+                    dbn_file_name = "rbm_ptr_{0}_{1}_{2}_{3}".format(m, l, mo, r)
+                    logging.info("Creating rbm({0})".format(dbn_file_name))
+                    rbm = RBM(sampler1, shape=[data_vector_size, data_vector_size], input_included = 10)
+
+                    for e in range(epochs):
+                        rbm.train(batches, learning_rate=l, epochs=1, momentum=mo, regularization_constant = r, max_size = m, label_mode = 'passive')
+
+                        logging.info("Evaluating the RBM")
+                        pr = rbm.evaluate(evaluation_set, evaluation_labels, 5)
+                        logging.info("Predict rate: {0}".format(pr))
+
+                    if best_pr < pr:
+                        most_fit = rbm
+                        best_pr = pr
+                        most_fit_params = [l, mo, r, e]
+
+        logging.info("Most fit params for {0}: {1}".format(m, most_fit_params))
 
 def train_dbn_final():
     logging.info("Loading dataset")
-    batch_size = 100
-    data_vector_size = 784
-    validation_size = 100
+    batch_size = 600
+    data_vector_size = 196
+    validation_size = 16
 
-    epochs = 20
+    epochs = 10
     lr = [0.5, 0.05, 0.01]
     cd = 1
     mom = [0.5, 0.95]
-    reg_con = [0.0001]
-    max_size = [64] #784, 588, 329, 256, 128]
+    reg_con = [0.0001, 0.0]
+    max_size = [64, 98, 128]
 
-    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv')
-    batches = dataset.get_batches(batch_size, include_labels = False, validation_set = validation_size)
-    f_batches = dataset.get_batches(batch_size, include_labels = True, validation_set = validation_size)
-    validation_set = dataset.get_validation_data(batch_size, validation_size)
-    validation_labels = dataset.get_validation_labels(batch_size, validation_size)
+    sampler1 = ModelCD(1)
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
+    batches = dataset.get_batches(batch_size, include_labels = False)
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+    f_batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
 
     for m in max_size:
         best_pr = 0.0
@@ -266,13 +476,13 @@ def train_dbn_final():
                 for r in reg_con:
                     dbn_file_name = "dbn_ptr_{0}_{1}_{2}_{3}".format(m, l, mo, r)
                     logging.info("Creating DBN({0})".format(dbn_file_name))
-                    dbn = DBN(shape=[data_vector_size, 784, 784, 784], label_shape = 10)
-                    dbn.greedy_pretrain(batches, learning_rate = l, epochs = 20, cd_iter = cd, momentum=mo, regularization_constant = r, max_size = m, labels = False)
+                    dbn = DBN(shape=[data_vector_size, data_vector_size, data_vector_size, data_vector_size], label_shape = 10)
+                    dbn.greedy_pretrain(sampler1, batches, learning_rate = l, epochs = epochs, momentum=mo, regularization_constant = r, max_size = m, labels = False)
 
                     dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = epochs, cycles = cd, regularization_constant = r, momentum = 0.5)
 
                     logging.info("Evaluating the DBN")
-                    pr = dbn.evaluate(validation_set, validation_labels, 5)
+                    pr = dbn.evaluate(evaluation_set, evaluation_labels, 5)
                     logging.info("Predict rate: {0}".format(pr))
 
                     if best_pr < pr:
@@ -281,29 +491,6 @@ def train_dbn_final():
                         most_fit_params = [l, mo, r]
 
         logging.info("Most fit params for {0}: {1}".format(m, most_fit_params))
-
-        logging.info("Starting actual training with the most fit parameters")
-
-        for e in epochs:
-            dbn_file_name = "../models/dbn_ptr_{0}_{1}".format(m, e)
-            logging.info("Creating DBN({0})".format(dbn_file_name))
-            dbn = DBN(shape=[data_vector_size, 784, 784, 784], label_shape = 10)
-            dbn.greedy_pretrain(batches, 
-                    learning_rate = most_fit_params[0], 
-                    epochs = e, 
-                    cd_iter = cd, 
-                    momentum=most_fit_params[1], 
-                    regularization_constant = most_fit_params[2], 
-                    max_size = m, 
-                    labels = False)
-
-            dbn.save_parameters(dbn_file_name)
-            #dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = cd, regularization_constant = r, momentum = 0.5)
-
-            #logging.info("Evaluating the DBN")
-            #pr = dbn.evaluate(validation_set, validation_labels, 5)
-            #logging.info("Predict rate: {0}".format(pr))
-
 
 def wake_sleep_dbn():
     logging.info("Loading dataset")
@@ -606,45 +793,46 @@ def train_rbm_from_mnist_with_input():
 
 def train_rbm_with_reduced_mnist():
     logging.info("Loading dataset")
-    batch_size = 100
+    batch_size = 600
     data_vector_size = 196
     hidden_layer_size = 196
-    epochs = [5]
-
+    max_size = 64
+    epochs = 5
     sampler = None
-    dwave = False
+    dwave = True
+
+    rbm_file_name = "./models/max_size_{0}/rbm_{0}_epoch_{1}.json"
 
     if dwave:
         sampler = ModelDWave(
             layout="pegasus",
-            source="dwave",
-            parallel=4,
-            beta=1.0,
-            num_reads=100,
+            source="aws",
+            parallel=3,
+            beta=3.0,
+            num_reads=400,
             s_pause=0.5
             )
     else:
         sampler = ModelCD(1)
 
     dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
-    batches = dataset.get_batches(batch_size, include_labels = True)
+    batches = dataset.get_batches(batch_size, include_labels = False)
     evaluation_set = dataset.get_evaluation_data_without_labels()
     evaluation_labels = dataset.get_evaluation_labels()
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
-    rbm = RBM(sampler, shape=[data_vector_size, hidden_layer_size], input_included = 10)
+
+    rbm = RBM(sampler, shape=[data_vector_size, hidden_layer_size], input_included=None)
 
     logging.info("Training this rbm now")
 
-    for e in range(20):
-        rbm.train(batches, learning_rate=0.01, epochs=1, momentum=0.5, regularization_constant = 0.0)
-
-        logging.info("PR on ev set: {0}".format(rbm.evaluate(evaluation_set, evaluation_labels, 5)))
-        logging.info("PR on tr set: {0}".format(rbm.evaluate(tr_set, tr_labels, 5)))
+    for e in range(epochs):
+        rbm.train(batches, learning_rate=0.5, regularization_constant = 0.0, epochs=1, momentum=0.5, max_size = max_size, log_batches = True)
+        rbm.save_parameters(rbm_file_name.format(max_size, e+1))
 
 def train_dbn_with_reduced_mnist():
     logging.info("Loading dataset")
-    batch_size = 100
+    batch_size = 600
     data_vector_size = 196
     hidden_layer_size = 196
     epochs = [5]
@@ -657,7 +845,7 @@ def train_dbn_with_reduced_mnist():
             layout="pegasus",
             source="dwave",
             parallel=4,
-            beta=1.0,
+            beta=3.0,
             num_reads=100,
             s_pause=0.5
             )
@@ -665,7 +853,8 @@ def train_dbn_with_reduced_mnist():
         sampler = ModelCD(1)
 
     dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
-    batches = dataset.get_batches(batch_size, include_labels = True)
+    batches = dataset.get_batches(batch_size, include_labels = False)
+    f_batches = dataset.get_batches(batch_size, include_labels = True)
     evaluation_set = dataset.get_evaluation_data_without_labels()
     evaluation_labels = dataset.get_evaluation_labels()
     tr_set = dataset.get_training_data_without_labels()
@@ -675,13 +864,52 @@ def train_dbn_with_reduced_mnist():
     dbn = DBN(shape=[data_vector_size, data_vector_size, data_vector_size, data_vector_size], label_shape = 10)
 
     # Pretraining
-    dbn.greedy_pretrain(sampler, batches, learning_rate = 0.1, epochs = 10, cd_iter = 1, momentum=0.95, regularization_constant = 0.0, max_size = 64, labels = False)
+    dbn.greedy_pretrain(sampler, batches, learning_rate = 0.5, epochs = 5, momentum=0.5, regularization_constant = 0.0, max_size = 64, labels = False)
 
     # Wakesleep
     for i in range(10):
-        dbn.wakesleep_algorithm(f_batches, learning_rate = 0.01, epochs = 1, cycles = 3, regularization_constant = r, momentum = 0.3)
-        logging.info("PR on ev set: {0}".format(dbm.evaluate(evaluation_set, evaluation_labels, 5)))
-        logging.info("PR on tr set: {0}".format(dbm.evaluate(tr_set, tr_labels, 5)))
+        dbn.wakesleep_algorithm(f_batches, learning_rate = 0.05, epochs = 1, cycles = 3, regularization_constant = 0.0, momentum = 0.5)
+        logging.info("PR on ev set: {0}".format(dbn.evaluate(evaluation_set, evaluation_labels, 5)))
+        logging.info("PR on tr set: {0}".format(dbn.evaluate(tr_set, tr_labels, 5)))
+
+def test_two_part_training():
+    logging.info("Loading dataset")
+    batch_size = 600
+    data_vector_size = 196
+    hidden_layer_size = 196
+    epochs = [5]
+
+    rbm_file_name = "./models/max_size_{0}/rbm_{0}_epoch_{1}.json"
+    dwave = False
+
+    if dwave:
+        sampler = ModelDWave(
+            layout="pegasus",
+            source="aws",
+            parallel=3,
+            beta=3.0,
+            num_reads=100,
+            s_pause=0.5
+            )
+    else:
+        sampler = ModelCD(1)
+
+    dataset = MnistDataset('../data/mnist_train.csv', '../data/mnist_test.csv', True)
+    batches = dataset.get_batches(batch_size, include_labels = False)
+    f_batches = dataset.get_batches(batch_size, include_labels = True)
+    evaluation_set = dataset.get_evaluation_data_without_labels()
+    evaluation_labels = dataset.get_evaluation_labels()
+    tr_set = dataset.get_training_data_without_labels()
+    tr_labels = dataset.get_training_labels()
+
+    rbm = RBM(sampler, shape=[data_vector_size, hidden_layer_size], input_included=10)
+    rbm.input_included = None
+
+    rbm.train(batches, learning_rate=0.5, regularization_constant = 0.0, epochs=1, momentum=0.5, max_size=64)
+    rbm.input_included = 10
+    rbm.train(f_batches, learning_rate=0.5, regularization_constant = 0.0, epochs=1, momentum=0.5)
+
+    logging.info("PR on tr set: {0}".format(rbm.evaluate(tr_set, tr_labels, 5)))
 
 if __name__ == "__main__":
     run()

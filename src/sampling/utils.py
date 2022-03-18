@@ -25,10 +25,11 @@ def l1_between_models(base_model, estimate_model):
     return np.sum(np.abs(vh_base - vh_est))
 
 def get_destination_folder():
-    s3_folders = ()
-    with open('destination_folder.txt', 'r') as dest_fold_file:
-        s3_folders[0] = destination_folder.readline()
-        s3_folders[1] = destination_folder.readline()
+    loc = None
+    folder = None
 
-    return s3_folders
+    with open('sampling/destination_folders.txt', 'r') as dest_fold_file:
+        loc = dest_fold_file.readline()
+        folder = dest_fold_file.readline()
 
+    return (loc[:-1], folder[:-1])

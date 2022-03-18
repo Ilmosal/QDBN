@@ -11,13 +11,17 @@ class Model:
     def __init__(self, model_id = "undefined"):
         self.model_id = model_id
 
-    def set_model_parameters(self, weights, visible, hidden):
+    def estimate_model(self):
+        """
+        Use sampler to sample the states
+        """
+        raise Exception("Base class model shouldn't be used")
+
+    def set_model_parameters(self, sampler_parameters):
         """
         Set model parameters.
         """
-        self.weights = weights
-        self.visible = visible
-        self.hidden = hidden
+        raise Exception("Base class model shouldn't be used")
 
     def get_samples_num(self):
         """
