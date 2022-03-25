@@ -37,11 +37,13 @@ dbn_file = '../data/dbn_weight_reg_parameters.json'
 rbm_file = '../data/rbm_l2_params.json'
 
 def run():
-    #logging.basicConfig(filename='bar_output.txt', filemode='w', level=logging.INFO)
+    #logging.basicConfig(filename='sampling_beta_output.txt', filemode='w', level=logging.INFO)
     logging.basicConfig(level=logging.INFO)
     logging.info("Running program")
 
-    #test_sampling_evaluation()
+#    for pt in [0.5]:
+#        test_sampling_evaluation(pt)
+
     #test_statistics()
     #test_two_part_training()
     test_bars_and_stripes()
@@ -69,8 +71,11 @@ def run():
     #test_dbn_final()
     #test_softmax()
 
-def test_sampling_evaluation():
+def test_sampling_evaluation(parameter):
     logging.info('testing sampling evaluation ')
+
+    random_seed = 1238
+    # Random seed 1238 produces good sampling results, 1234 produces bad. The accuracy of sampling when compared to other things seems to be quite difficult to evaluate
 
     batch_size = 1000
     data_vector_size = 64
@@ -79,25 +84,39 @@ def test_sampling_evaluation():
 
     dwave_sampler = ModelDWave(
             layout="pegasus",
-            source="aws",
-            beta=3.5,
+            source="dwave",
+            beta=1.0,
             num_reads=400,
-            s_pause=0.5)
+            s_pause=parameter,
+            pause_duration=100.0,
+            parallel_runs=True)
 
-    sampler = ModelCD(1000, use_state=False)
+    sampler = ModelCD(1000, use_state=False, seed = random_seed)
+    cd_sampler = ModelCD(1, use_state=False, seed = random_seed)
 
-    dataset = BarsAndStripes(8, 0.5, use_offsets = False, seed = 10000)
+    dataset = BarsAndStripes(8, 0.5, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = False)
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
     evaluation_set = dataset.get_evaluation_data_without_labels()
     evaluation_labels = dataset.get_evaluation_labels()
 
-    rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = None)
+    rbm = RBM(cd_sampler, shape=[data_vector_size, data_vector_size], input_included = None, weight_dist = 0.32, seed = random_seed)
+    rbm.log_statistics(evaluation_set, evaluation_labels)
 
     res = evaluate_samplers(dwave_sampler, sampler, rbm, tr_set)
+    logging.info("Quantum Sampling results: {0}".format(res))
 
-    logging.info("Sampling results: {0}".format(res))
+    for i in range(5):
+        rbm.train(batches, learning_rate=0.1, regularization_constant = 0.01, epochs=1, momentum=0.5)
+        rbm.log_statistics(evaluation_set, evaluation_labels)
+
+        res = evaluate_samplers(dwave_sampler, sampler, rbm, tr_set)
+        logging.info("Quantum Sampling results: {0}".format(res))
+
+#    res = evaluate_samplers(cd_sampler, sampler, rbm, tr_set)
+
+#    logging.info("Ordinary Sampling results: {0}".format(res))
 
 def test_statistics():
     logging.info("Creating dataset")
@@ -122,7 +141,7 @@ def test_statistics():
         rbm.log_statistics(evaluation_set, evaluation_labels)
 
         for e in range(epochs):
-            rbm.train(batches, learning_rate=0.1, regularization_constant = 0.01, epochs=1, momentum=0.5, max_size = max_size)
+            rbm.train(batches, learning_rate=0.1, regularization_constant = 0.1, epochs=1, momentum=0.5, max_size = max_size)
             pr = rbm.evaluate(evaluation_set, evaluation_labels, 5)
             logging.info("Prediction rate: {0}".format(pr))
             pr = rbm.evaluate(tr_set, tr_labels, 1)
@@ -136,24 +155,26 @@ def test_bars_and_stripes():
     batch_size = 100
     data_vector_size = 64
     hidden_layer_size = 64
-    epochs = 10
+    epochs = 40
     sampler = None
     dwave = False
 
-    rbm_file_name = "./models/max_size_{0}/c_rbm_{0}_epoch_{1}.json"
+    rbm_file_name = "./models/max_size_{0}/crbm_active_{0}_epoch_{1}.json"
+    random_seed = 13241
 
     if dwave:
         sampler = ModelDWave(
             layout="pegasus",
-            source="aws",
+            source="dwave",
             beta=3.5,
-            num_reads=400,
-            s_pause=0.45
+            num_reads=100,
+            s_pause=0.45,
+            parallel_runs=True
             )
     else:
-        sampler = ModelCD(1, use_state = True)
+        sampler = ModelCD(1, use_state = False, seed = random_seed)
 
-    dataset = BarsAndStripes(8, 0.7, use_offsets = False, seed = 10000)
+    dataset = BarsAndStripes(8, 0.75, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
@@ -162,13 +183,14 @@ def test_bars_and_stripes():
 
     logging.info("Training this rbm now")
     for max_size in [64]:
-        rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32)
+        rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32, seed = random_seed)
         rbm.log_statistics(evaluation_set, evaluation_labels)
+        #rbm.save_parameters(rbm_file_name.format(max_size, 0))
 
         for e in range(epochs):
             rbm.train(batches, learning_rate=0.01, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=max_size, label_mode='passive')
             rbm.log_statistics(evaluation_set, evaluation_labels)
-            rbm.save_parameters(rbm_file_name.format(max_size, e))
+            #rbm.save_parameters(rbm_file_name.format(max_size, e+1))
 
 def test_bars_and_stripes_dbn():
     logging.info("Creating dataset")

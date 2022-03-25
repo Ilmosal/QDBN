@@ -14,7 +14,7 @@ class RBM(object):
     """
     Base class for the rbm object
     """
-    def __init__(self, sampler = None, shape = [1,1], parameters = None, input_included = None, weight_dist = 0.01):
+    def __init__(self, sampler = None, shape = [1,1], parameters = None, input_included = None, weight_dist = 0.01, seed = None):
         if not isinstance(shape,list) and len(shape) != 2:
             logging.error("Shape not an array with two values")
 
@@ -27,6 +27,7 @@ class RBM(object):
         self.epochs_trained = 0
         self.state = np.array([])
 
+        self.generator = np.random.default_rng(seed)
 
         if parameters is not None:
             if type(parameters) is str:
@@ -44,15 +45,15 @@ class RBM(object):
         else:
             self.shape = shape
 
-            # Weights initialized from gaussian with stdDev=0.1/sqrt(n_visible*n_hidden) 
-            self.weights = np.random.normal(0.0, weight_dist, [self.shape[0], self.shape[1]])
+            # Weights initialized from gaussian with stdDev=weight_dist
+            self.weights = self.generator.normal(0.0, weight_dist, [self.shape[0], self.shape[1]])
 
             # Biases initialized at zeros
             self.visible_biases = np.zeros(self.shape[0], dtype=float)
             self.hidden_biases = np.zeros(self.shape[1], dtype=float)
 
             if input_included is not None:
-                self.label_weights = np.random.normal(0.0, 0.01, [input_included, self.shape[1]])
+                self.label_weights = self.generator.normal(0.0, 0.01, [input_included, self.shape[1]])
                 self.label_biases = np.zeros(input_included, dtype=float)
             else:
                 self.label_weights = None
@@ -71,7 +72,7 @@ class RBM(object):
         if exact:
             return utils.softmax(np.dot(state, self.label_weights.transpose()) + self.label_biases)
         else:
-            return utils.activate_softmax(np.dot(state, self.label_weights.transpose()) + self.label_biases)
+            return utils.activate_softmax(np.dot(state, self.label_weights.transpose()) + self.label_biases, self.generator)
 
     def infer_visible(self, state, exact = False):
         """
@@ -80,7 +81,7 @@ class RBM(object):
         if exact:
             return utils.sigmoid(np.dot(state, self.weights.transpose()) + self.visible_biases)
         else:
-            return utils.activate_sigmoid(np.dot(state, self.weights.transpose()) + self.visible_biases)
+            return utils.activate_sigmoid(np.dot(state, self.weights.transpose()) + self.visible_biases, self.generator)
 
     def infer_hidden(self, state, exact = False, labels_state = None):
         """
@@ -90,12 +91,12 @@ class RBM(object):
             if exact:
                 return utils.sigmoid(np.dot(state, self.weights) + self.hidden_biases) + utils.softmax(np.dot(labels_state, self.label_weights))
             else:
-                return utils.activate_sigmoid(np.dot(state, self.weights) + self.hidden_biases + utils.softmax(np.dot(labels_state, self.label_weights)))
+                return utils.activate_sigmoid(np.dot(state, self.weights) + self.hidden_biases + utils.softmax(np.dot(labels_state, self.label_weights)), self.generator)
         else:
             if exact:
                 return utils.sigmoid(np.dot(state, self.weights) + self.hidden_biases)
             else:
-                return utils.activate_sigmoid(np.dot(state, self.weights) + self.hidden_biases)
+                return utils.activate_sigmoid(np.dot(state, self.weights) + self.hidden_biases, self.generator)
 
     def create_dropoff_parameters(self, max_size, v_ids, h_ids):
         """
@@ -115,8 +116,8 @@ class RBM(object):
         if max_size != -1: # Assume layers of roughly equal sizes
             max_divide = max(math.floor(self.shape[1] / max_size), math.floor(self.shape[0] / max_size))
 
-            np.random.shuffle(h_ids)
-            np.random.shuffle(v_ids)
+            self.generator.shuffle(h_ids)
+            self.generator.shuffle(v_ids)
 
             # Initialize all the full groups
             for i in range(max_divide):
@@ -243,7 +244,7 @@ class RBM(object):
             ldw = np.copy(self.label_weights) * 0.0
 
         # States of the visible and hidden units initialized randomly for all the batches
-        state = [np.random.randint(0, 2, (batch_size, self.shape[0])).astype(float), np.random.randint(0, 2, (batch_size, self.shape[1])).astype(float)]
+        state = [self.generator.integers(0, 2, (batch_size, self.shape[0])).astype(float), self.generator.integers(0, 2, (batch_size, self.shape[1])).astype(float)]
 
         if max_size != -1:
             scaling = max_size / len(self.hidden_biases)
@@ -281,7 +282,7 @@ class RBM(object):
                 # Create the hidden states 
                 state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias)
                 state_copy = copy.deepcopy(state)
-                state[1] = utils.sample(state[1])
+                state[1] = utils.sample(state[1], self.generator)
 
                 sampler_params['dataset'] = state
 
@@ -359,7 +360,7 @@ class RBM(object):
 
         if self.input_included is not None:
             if input_value is None:
-                input_value = np.random.randint(0, 10)
+                input_value = self.generator.integers(0, self.input_included)
             label_sample[:,input_value] = 1.0
 
         last = False
@@ -389,7 +390,7 @@ class RBM(object):
         class_sample[0] = data
 
         for i in range(cycles):
-            class_sample[1] = utils.activate_sigmoid(np.dot(class_sample[0], self.weights) + self.hidden_biases + utils.softmax(np.dot(label_sample, self.label_weights)))
+            class_sample[1] = utils.activate_sigmoid(np.dot(class_sample[0], self.weights) + self.hidden_biases + utils.softmax(np.dot(label_sample, self.label_weights)), self.generator)
             label_sample = utils.softmax(np.dot(class_sample[1], self.label_weights.transpose()) + self.label_biases)
 
         return label_sample

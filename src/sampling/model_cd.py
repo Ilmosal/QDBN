@@ -77,7 +77,7 @@ class ModelCD(Model):
         if exact:
             return sigmoid(np.dot(values, self.weights) + self.hidden + labels_influence)
         else:
-            return sample(sigmoid(np.dot(values, self.weights) + self.hidden + labels_influence))
+            return sample(sigmoid(np.dot(values, self.weights) + self.hidden + labels_influence), self.generator)
 
     def activate_visible(self, values, exact = False):
         """
@@ -86,7 +86,7 @@ class ModelCD(Model):
         if exact:
             return sigmoid(np.dot(values, self.weights.transpose()) + self.visible)
         else:
-            return sample(sigmoid(np.dot(values, self.weights.transpose()) + self.visible))
+            return sample(sigmoid(np.dot(values, self.weights.transpose()) + self.visible), self.generator)
 
     def activate_labels(self, values, exact = False):
         """
@@ -95,5 +95,5 @@ class ModelCD(Model):
         if exact:
             return softmax(np.dot(values, self.label_weights.transpose()) + self.label_weights)
         else:
-            return sample(softmax(np.dot(values, self.label_weights.transpose()) + self.label_weights))
+            return sample(softmax(np.dot(values, self.label_weights.transpose()) + self.label_weights), self.generator)
 

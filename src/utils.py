@@ -26,14 +26,14 @@ def softmax(val):
     sum_val = np.sum(np.exp(val), axis=1, keepdims=True)
     return np.exp(val) / sum_val
 
-def sample(val):
-    return (val > np.random.uniform(0.0, 1.0, val.shape)).astype(float)
+def sample(val, generator):
+    return (val > generator.uniform(0.0, 1.0, val.shape)).astype(float)
 
-def activate_sigmoid(val):
-    return sample(sigmoid(val))
+def activate_sigmoid(val, generator):
+    return sample(sigmoid(val), generator)
 
-def activate_softmax(val):
-    return sample(softmax(val))
+def activate_softmax(val, generator):
+    return sample(softmax(val), generator)
 
 def plot_letter(letter_data):
     """
@@ -42,7 +42,7 @@ def plot_letter(letter_data):
     plt.imshow(np.reshape(letter_data, [28, 28]), cmap='gray')
     plt.show()
 
-def evaluate_samplers(sampler, bm_sampler, rbm, dataset):
+def evaluate_samplers(sampler, bm_sampler, rbm, dataset, label_mode = "passive"):
     """
     Function for evaluating the sampling capabilities of two samplers
     """
@@ -54,8 +54,9 @@ def evaluate_samplers(sampler, bm_sampler, rbm, dataset):
             'v_ids': np.arange(rbm.shape[0]),
             'h_ids': np.arange(rbm.shape[1]),
             'max_size': rbm.shape[0],
-            'max_divide': 1
-    }
+            'max_divide': 1,
+            'label_mode': label_mode
+            }
 
     cd_model_parameters = {
             'dataset': [dataset, None],
@@ -65,7 +66,8 @@ def evaluate_samplers(sampler, bm_sampler, rbm, dataset):
             'v_ids': np.arange(rbm.shape[0]),
             'h_ids': np.arange(rbm.shape[1]),
             'max_size': rbm.shape[0],
-            'max_divide': 1
+            'max_divide': 1,
+            'label_mode': label_mode
     }
 
     if sampler.model_id == 'model_dwave':
@@ -91,7 +93,5 @@ def evaluate_samplers(sampler, bm_sampler, rbm, dataset):
 
     s_model_vh = np.dot(s_results[0].transpose(), s_results[1]) / samples_num
     bm_model_vh = np.dot(bm_results[0].transpose(), bm_results[1]) / bm_samples_num
-
-    print(bm_model_vh)
 
     return np.sum(np.abs(s_model_vh - bm_model_vh))

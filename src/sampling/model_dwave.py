@@ -24,7 +24,7 @@ class ModelDWave(Model):
     """
     Base class for model for DWave machines with various layouts
     """
-    def __init__(self, layout, source = "dwave", beta=1.0, num_reads = 100, s_pause = 0.5):
+    def __init__(self, layout, source = "dwave", beta=1.0, num_reads = 100, s_pause = 0.5, pause_duration = 100.0, parallel_runs = False):
         super(ModelDWave, self).__init__("model_dwave")
 
         if layout not in ['chimera', 'pegasus']:
@@ -38,9 +38,11 @@ class ModelDWave(Model):
         self.beta = beta
         self.num_reads = num_reads
         self.s_pause = s_pause
+        self.pause_duration = pause_duration
 
         # Multiple passes defaults to True
         self.multiple_passes = True
+        self.parallel_runs = parallel_runs
 
         self.embeddings = {
             'aws': {
@@ -70,6 +72,20 @@ class ModelDWave(Model):
                     3: 'sampling/models/advantage_mappings/advantage_parallel_mapping_64_3.json',
                     4: 'sampling/models/advantage_mappings/advantage_parallel_mapping_64_4.json'
                 }
+            },
+            'europe': {
+                128: {
+                    1: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_128_1.json'
+                },
+                98: {
+                    1: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_98_1.json',
+                },
+                64: {
+                    1: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_64_1.json',
+                    2: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_64_2.json',
+                    3: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_64_3.json',
+                    4: 'sampling/models/advantage_mappings/europe_advantage_parallel_mapping_64_4.json'
+                }
             }
         }
 
@@ -90,6 +106,10 @@ class ModelDWave(Model):
         # Test if an embedding exists for these parameters, otherwise multiple passes are required
         if self.max_size in self.embeddings[self.source].keys() and self.parallel in self.embeddings[self.source][self.max_size].keys():
             self.multiple_passes = False
+
+            # Check wether parallel runs are possible
+            if self.parallel_runs and len(self.embeddings[self.source][self.max_size].keys()) >= 1:
+                self.parallel = max(self.embeddings[self.source][self.max_size].keys())
         else:
             self.multiple_passes = True
 
@@ -109,8 +129,8 @@ class ModelDWave(Model):
                 a_schedule = [
                         [0.0, 0.0],
                         [50.0, self.s_pause],
-                        [1050.0, self.s_pause],
-                        [1100.0, 1.0]
+                        [50.0 + self.pause_duration, self.s_pause],
+                        [100.0 + self.pause_duration, 1.0]
                         ]
 
                 results.append(
@@ -122,6 +142,7 @@ class ModelDWave(Model):
                         num_spin_reversal_transforms = 5,
                         anneal_schedule = a_schedule)
                 )
+
             samples = self.extract_values_from_partial_samples(results)
 
         else:
@@ -130,17 +151,24 @@ class ModelDWave(Model):
             a_schedule = [
                     [0.0, 0.0],
                     [50.0, self.s_pause],
-                    [1050.0, self.s_pause],
-                    [1100.0, 1.0]
+                    [50.0 + self.pause_duration, self.s_pause],
+                    [100.0 + self.pause_duration, 1.0]
                     ]
+
+            # Reduce the number of reads when computing things in parallel
+            eff_num_reads = self.num_reads
+
+            if self.parallel_runs:
+                eff_num_reads = int(self.num_reads / self.parallel)
 
             response = emb_problem.sample_ising(
                 h_bias,
                 j_coupling,
                 return_embedding = True,
-                num_reads = self.num_reads,
+                num_reads = eff_num_reads,
                 num_spin_reversal_transforms = 5,
                 anneal_schedule = a_schedule)
+
             samples = self.extract_values_from_samples(response)
 
         return samples
@@ -154,6 +182,11 @@ class ModelDWave(Model):
                 return DWaveSampler(solver={'topology__type': 'chimera'})
             elif self.layout == "pegasus":
                 return DWaveSampler(solver={'name': 'Advantage_system4.1'})
+        elif self.source == "europe":
+            if self.layout == "pegasus":
+                return DWaveSampler(solver={'name': 'Advantage_system5.1'})
+            else:
+                raise Exception("No Chimera samplers in Europe")
         elif self.source == "aws":
             return BraketDWaveSampler(get_destination_folder(), device_arn = self.aws_str)
         else:
@@ -195,6 +228,7 @@ class ModelDWave(Model):
         Take a dwave sampleset and extract hidden and visible states from them
         """
         n_samples = len(response.samples())
+
         vis_states = np.zeros([self.parallel, n_samples, self.max_size])
         hid_states = np.zeros([self.parallel, n_samples, self.max_size])
 
@@ -207,16 +241,25 @@ class ModelDWave(Model):
                 for hid_id in range(self.max_size):
                     hid_states[pr, i, hid_id] = response.samples()[i]['h_{0}_{1}'.format(pr, hid_id)] / 2 + 0.5
 
-        states = [np.zeros((n_samples, len(self.v_ids))), np.zeros((n_samples, len(self.h_ids)))]
+        states = [np.zeros((self.num_reads, len(self.v_ids))), np.zeros((self.num_reads, len(self.h_ids)))]
 
         # Change the format of the states to correspond to the actual RBM
-        for pr in range(self.parallel):
-            for sample_id in range(n_samples):
-                for i, v_id in enumerate(self.v_ids[pr * self.max_size: (pr + 1) * self.max_size]):
-                    states[0][sample_id, v_id] = vis_states[pr, sample_id, i]
+        if self.parallel_runs:
+            for pr in range(self.parallel):
+                for sample_id in range(n_samples):
+                    for i, v_id in enumerate(self.v_ids):
+                        states[0][pr * n_samples + sample_id, v_id] = vis_states[pr, sample_id, i]
 
-                for j, h_id in enumerate(self.h_ids[pr * self.max_size: (pr + 1) * self.max_size]):
-                    states[1][sample_id, h_id] = hid_states[pr, sample_id, j]
+                    for j, h_id in enumerate(self.h_ids):
+                        states[1][pr * n_samples + sample_id, h_id] = hid_states[pr, sample_id, j]
+        else:
+            for pr in range(self.parallel):
+                for sample_id in range(n_samples):
+                    for i, v_id in enumerate(self.v_ids[pr * self.max_size: (pr + 1) * self.max_size]):
+                        states[0][sample_id, v_id] = vis_states[pr, sample_id, i]
+
+                    for j, h_id in enumerate(self.h_ids[pr * self.max_size: (pr + 1) * self.max_size]):
+                        states[1][sample_id, h_id] = hid_states[pr, sample_id, j]
 
         return states
 
@@ -307,21 +350,27 @@ class ModelDWave(Model):
         h_mag = {}
 
         for pr in range(self.parallel):
-            for i in range(self.max_size):
-                for j in range(self.max_size):
-                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = -self.weights[pr][i, j] / 4
+            pr_id = pr
+
+            # If computing stuff in parallel, only pick values from the first pr_id
+            if self.parallel_runs:
+                pr_id = 0
 
             for i in range(self.max_size):
-                h_mag['v_{0}_{1}'.format(pr, i)] = -self.visible[pr][i] / 2
+                for j in range(self.max_size):
+                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = -self.weights[pr_id][i, j] / 4
+
+            for i in range(self.max_size):
+                h_mag['v_{0}_{1}'.format(pr, i)] = -self.visible[pr_id][i] / 2
 
                 for j in range(self.max_size):
-                    h_mag['v_{0}_{1}'.format(pr, i)] -= self.weights[pr][i, j] / 4
+                    h_mag['v_{0}_{1}'.format(pr, i)] -= self.weights[pr_id][i, j] / 4
 
             for j in range(self.max_size):
-                h_mag['h_{0}_{1}'.format(pr, j)] = -self.hidden[pr][j] / 2
+                h_mag['h_{0}_{1}'.format(pr, j)] = -self.hidden[pr_id][j] / 2
 
                 for i in range(self.max_size):
-                    h_mag['h_{0}_{1}'.format(pr, j)] -= self.weights[pr][i, j] / 4
+                    h_mag['h_{0}_{1}'.format(pr, j)] -= self.weights[pr_id][i, j] / 4
 
         for h_key in h_mag.keys():
             h_mag[h_key] /= self.beta

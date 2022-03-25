@@ -11,8 +11,8 @@ def unpackbits(val, num_bits):
     mask = 2 ** np.arange(num_bits, dtype=val.dtype).reshape([1, num_bits])
     return (val & mask).astype(bool).astype(int).reshape(valshape + [num_bits])
 
-def sample(val):
-    return (val > np.random.uniform(0.0, 1.0, val.shape)).astype(float)
+def sample(val, generator):
+    return (val > generator.uniform(0.0, 1.0, val.shape)).astype(float)
 
 def sigmoid(val):
     np.clip(val, a_min = -700, a_max=None, out=val)

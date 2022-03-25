@@ -142,7 +142,7 @@ class BarsAndStripes():
 
             samples[n,-1] = 1
 
-        np.random.shuffle(samples)
+        self.random_generator.shuffle(samples)
 
         return samples
 
