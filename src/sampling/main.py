@@ -20,7 +20,7 @@ from sampling.dataset import Dataset
 from sampling.utils import l1_between_models
 from sampling.model import RBMParameters
 from sampling.model_cd import ModelCD
-from sampling.model_dwave import ModelDWAVE
+from sampling.model_dwave import ModelDWAVE, ModelRa
 
 def test_working_models():
     """

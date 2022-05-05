@@ -45,7 +45,7 @@ class ModelCD(Model):
         hid_state = np.copy(self.dataset[1])
 
         if self.label_mode == 'active':
-            lab_state = np.zeros(self.label_biases.shape)
+            lab_state = np.zeros(self.label_biases.shape) + 0.5
         else:
             lab_state = None
 
@@ -53,7 +53,7 @@ class ModelCD(Model):
             vis_state *= 0.0
             vis_state += 0.5
 
-            hid_state = self.activate_hidden(vis_state)
+            hid_state = self.activate_hidden(vis_state, lab_state)
 
         for i in range(self.cd_iter):
             vis_state = self.activate_visible(hid_state, True)

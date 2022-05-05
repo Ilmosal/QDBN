@@ -148,12 +148,15 @@ class ModelDWave(Model):
         else:
             h_bias, j_coupling = self.generate_couplings()
 
-            a_schedule = [
-                    [0.0, 0.0],
-                    [50.0, self.s_pause],
-                    [50.0 + self.pause_duration, self.s_pause],
-                    [100.0 + self.pause_duration, 1.0]
-                    ]
+            if self.pause_duration == 0.0:
+                a_schedule = None
+            else:
+                a_schedule = [
+                        [0.0, 0.0],
+                        [50.0, self.s_pause],
+                        [50.0 + self.pause_duration, self.s_pause],
+                        [100.0 + self.pause_duration, 1.0]
+                        ]
 
             # Reduce the number of reads when computing things in parallel
             eff_num_reads = self.num_reads
@@ -320,19 +323,19 @@ class ModelDWave(Model):
 
         for i in range(self.max_size):
             for j in range(self.max_size):
-                j_couplings[('v_0_{0}'.format(i), 'h_0_{0}'.format(j))] = -self.weights[parallel_index][i, j] / 4
+                j_couplings[('v_0_{0}'.format(i), 'h_0_{0}'.format(j))] = self.weights[parallel_index][i, j] / 4
 
         for i in range(self.max_size):
-            h_mag['v_0_{0}'.format(i)] = -self.visible[parallel_index][i] / 2
+            h_mag['v_0_{0}'.format(i)] = self.visible[parallel_index][i] / 2
 
             for j in range(self.max_size):
-                h_mag['v_0_{0}'.format(i)] -= self.weights[parallel_index][i, j] / 4
+                h_mag['v_0_{0}'.format(i)] += self.weights[parallel_index][i, j] / 4
 
         for j in range(self.max_size):
-            h_mag['h_0_{0}'.format(j)] = -self.hidden[parallel_index][j] / 2
+            h_mag['h_0_{0}'.format(j)] = self.hidden[parallel_index][j] / 2
 
             for i in range(self.max_size):
-                h_mag['h_0_{0}'.format(j)] -= self.weights[parallel_index][i, j] / 4
+                h_mag['h_0_{0}'.format(j)] += self.weights[parallel_index][i, j] / 4
 
         for h_key in h_mag.keys():
             h_mag[h_key] /= self.beta
@@ -358,19 +361,19 @@ class ModelDWave(Model):
 
             for i in range(self.max_size):
                 for j in range(self.max_size):
-                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = -self.weights[pr_id][i, j] / 4
+                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = self.weights[pr_id][i, j] / 4
 
             for i in range(self.max_size):
-                h_mag['v_{0}_{1}'.format(pr, i)] = -self.visible[pr_id][i] / 2
+                h_mag['v_{0}_{1}'.format(pr, i)] = self.visible[pr_id][i] / 2
 
                 for j in range(self.max_size):
-                    h_mag['v_{0}_{1}'.format(pr, i)] -= self.weights[pr_id][i, j] / 4
+                    h_mag['v_{0}_{1}'.format(pr, i)] += self.weights[pr_id][i, j] / 4
 
             for j in range(self.max_size):
-                h_mag['h_{0}_{1}'.format(pr, j)] = -self.hidden[pr_id][j] / 2
+                h_mag['h_{0}_{1}'.format(pr, j)] = self.hidden[pr_id][j] / 2
 
                 for i in range(self.max_size):
-                    h_mag['h_{0}_{1}'.format(pr, j)] -= self.weights[pr_id][i, j] / 4
+                    h_mag['h_{0}_{1}'.format(pr, j)] += self.weights[pr_id][i, j] / 4
 
         for h_key in h_mag.keys():
             h_mag[h_key] /= self.beta

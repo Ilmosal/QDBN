@@ -97,13 +97,23 @@ class BarsAndStripes():
     """
     Class containing a definition for the bars and stripes dataset
     """
-    def __init__(self, img_width, error_rate, tr_samples = 10000, ev_samples = 2000, use_offsets = False, seed = 1000):
+    def __init__(self, img_size, error_rate, tr_samples = 10000, ev_samples = 2000, use_offsets = False, seed = 1000):
         self.training_data = np.array([])
         self.evaluation_data = np.array([])
         self.batch_size = 0
         self.batches = 0
-        self.data_vector_size = img_width*img_width
-        self.image_width = img_width
+
+        if isinstance(img_size, list):
+            self.data_vector_size = img_size[0]*img_size[1]
+            self.image_width = img_size[0]
+            self.image_height = img_size[1]
+        elif isinstance(img_size, int):
+            self.data_vector_size = img_size*img_size
+            self.image_width = img_size
+            self.image_height = img_size
+        else:
+            raise Exception("Error trying to generate dataset! img_size not of type list or integer.")
+
         self.label_vector_size = 2
         self.random_generator = np.random.default_rng(seed)
 

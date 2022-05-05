@@ -19,7 +19,7 @@ class RBM(object):
             logging.error("Shape not an array with two values")
 
         if sampler is None:
-            self.sampler = ModelCD(1)
+            self.sampler = ModelCD(1, seed = seed)
         else:
             self.sampler = sampler
 
@@ -301,6 +301,7 @@ class RBM(object):
 
                 # Get the label states
                 if self.input_included is not None:
+                    # should this be activate softmax instead? softmax can return quite drastic values
                     label_state = utils.softmax(np.dot(sampled_state[1], self.label_weights.transpose()) + self.label_biases)
 
                 # Update weights and biases 
