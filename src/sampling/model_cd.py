@@ -28,6 +28,7 @@ class ModelCD(Model):
         self.hidden = sampler_parameters['hidden']
         self.dataset = sampler_parameters['dataset']
         self.label_mode = sampler_parameters['label_mode']
+        self.hidden += sampler_parameters['label_influence']
 
         if self.label_mode == 'active':
             self.label_weights = sampler_parameters['label_weights']

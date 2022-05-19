@@ -22,6 +22,12 @@ def l1_between_models(base_model, estimate_model):
     vh_base = np.dot(base_model[0].transpose(), base_model[1]) / len(base_model[0])
     vh_est = np.dot(estimate_model[0].transpose(), estimate_model[1]) / len(estimate_model[0])
 
+#    print(np.sum(estimate_model[0], axis = 0) / len(estimate_model[0]))
+#    print(np.sum(estimate_model[1], axis = 0) / len(estimate_model[1]))
+
+#    print(np.sum(base_model[0], axis = 0) / len(base_model[0]))
+#    print(np.sum(base_model[1], axis = 0) / len(base_model[1]))
+
     return np.sum(np.abs(vh_base - vh_est))
 
 def get_destination_folder():

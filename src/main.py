@@ -42,12 +42,12 @@ def run():
     logging.basicConfig(level=logging.INFO)
     logging.info("Running program")
 
-    test_sampling_dwave_by_epoch()
+    #test_sampling_dwave_by_epoch()
     #train_for_a_single_epoch(11)
 
     #test_sampling_evaluation(None)
     #test_sampling()
-    #train_important_quantum_rbms_256()
+    train_important_quantum_rbms_256()
     #train_important_quantum_rbms_64()
     #train_important_classical_rbms_64()
     #train_important_classical_rbms_256()
@@ -82,7 +82,7 @@ def test_sampling_dwave_by_epoch():
     logging.info("Testing sampling capabilities of DWave machine")
 
     n_size = 64
-    rbm = RBM(None, shape=[n_size, n_size], input_included = None, weight_dist = 0.32)
+    rbm = RBM(None, shape=[n_size, n_size], input_included = None, weight_dist = 0.01)
 
     dataset = BarsAndStripes([8, 8], 0.7, use_offsets = False, seed = 123456789)
     batches = dataset.get_batches(20, include_labels = False)
@@ -105,21 +105,24 @@ def test_sampling_dwave_by_epoch():
     model_aws = ModelDWave(
         layout="pegasus",
         source="aws",
-        beta=1.00,
+        beta=1.0,
         num_reads=1000,
         s_pause=0.50,
-        pause_duration=0.0,
+        pause_duration=100.0,
         parallel_runs=False)
+
     model_random = ModelRandom()
 
-    for i in range(3):
-        rbm.load_parameters("./models/model_size_{0}/q_rbm_test_parallel_epoch_{1}.json".format(64, i))
+    for i in range(11):
+        rbm.load_parameters("./models/model_size_{0}/q_rbm_diff_parallel_epoch_{1}.json".format(64, i))
+
         rbm.log_statistics(evaluation_set, evaluation_labels)
 
         cd_samp_params = {
             'weights': rbm.weights,
             'visible': rbm.visible_biases,
             'hidden': rbm.hidden_biases,
+            'label_influence': rbm.hidden_biases * 0.0,
             'label_mode': 'passive',
             'dataset': dat_values,
         }
@@ -129,6 +132,7 @@ def test_sampling_dwave_by_epoch():
             'visible': [rbm.visible_biases],
             'hidden': [rbm.hidden_biases],
             'label_mode': 'passive',
+            'label_influence': rbm.hidden_biases * 0.0,
             'dataset': dat_values,
             'h_ids': [*range(0, n_size)],
             'v_ids': [*range(0, n_size)],
@@ -145,10 +149,14 @@ def test_sampling_dwave_by_epoch():
 
         res_1 = model_aws.estimate_model()
         res_2 = model_cd_1.estimate_model()
+        res_3 = model_random.estimate_model()
         an_res = model_cd.estimate_model()
 
-        l1 = l1_between_models(an_res, res_1)
+        l1 = l1_between_models(an_res, res_3)
         logging.info("l1 between random model: {0}".format(l1))
+
+        l1 = l1_between_models(an_res, res_1)
+        logging.info("l1 between dwave model: {0}".format(l1))
 
         l1 = l1_between_models(an_res, res_2)
         logging.info("l1 between cd model: {0}".format(l1))
@@ -275,7 +283,6 @@ def train_for_a_single_epoch(cur_epoch):
         pause_duration=100.0,
         parallel_runs=False)
 
-
     dataset = BarsAndStripes(16, 0.6, use_offsets = True, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
     tr_set = dataset.get_training_data_without_labels()
@@ -295,25 +302,28 @@ def train_for_a_single_epoch(cur_epoch):
 def train_important_quantum_rbms_64():
     logging.info('Training important quantum RBMs with size 64x64')
 
-    batch_size = 500
+    batch_size = 2000
     data_vector_size = 64
     hidden_layer_size = 64
-    epochs = 10
+    epochs = 1
 
     random_seed = 123456788
 
-    sampler = ModelDWave(
+    # attempting to correct the learning
+
+    q_sampler = ModelDWave(
         layout="pegasus",
         source="aws",
-        beta=0.25,
+        beta=1.0,
         num_reads=400,
-        s_pause=0.45,
+        chain_strength = 2,
+        s_pause=0.50,
         pause_duration=100.0,
         parallel_runs=True)
 
-    #sampler = ModelCD(1, use_state = True, seed = random_seed)
+    sampler = ModelCD(1, use_state = True, seed = random_seed)
 
-    rbm_file_name = "./models/model_size_{0}/q_rbm__epoch_{1}.json"
+    rbm_file_name = "./models/model_size_{0}/q_rbm_aws_parallel_epoch_{1}.json"
 
     dataset = BarsAndStripes(8, 0.7, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
@@ -324,15 +334,14 @@ def train_important_quantum_rbms_64():
 
     logging.info("Training this rbm now")
 
-    rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.01, seed = random_seed)
-    #rbm.save_parameters(rbm_file_name.format(64, 0))
-    rbm.load_parameters(rbm_file_name.format(64, 20))
+    rbm = RBM(q_sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32, seed = random_seed)
+#    rbm.save_parameters(rbm_file_name.format(64, 0))
     rbm.log_statistics(evaluation_set, evaluation_labels)
 
     for e in range(0, epochs):
-        rbm.train(batches, learning_rate=0.1, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=-1, label_mode='passive')
+        rbm.train(batches, learning_rate=0.1, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=64, label_mode='passive', log_batches = True)
         rbm.log_statistics(evaluation_set, evaluation_labels)
-        rbm.save_parameters(rbm_file_name.format(64, e+1))
+#        rbm.save_parameters(rbm_file_name.format(64, e+1))
 
 def train_important_classical_rbms_64():
     logging.info('Training important classical RBMS with size 64x64')
@@ -389,20 +398,20 @@ def train_important_quantum_rbms_256():
     random_seed = 123456788
 
     parameters = [
-        [128, 0.1],
-        [64, 0.1],
+        [128, 0.1]
     ]
 
     q_sampler = ModelDWave(
         layout="pegasus",
         source="aws",
-        beta=2.0,
-        num_reads=100,
-        s_pause=0.45,
-        pause_duration=100.0,
-        parallel_runs=False)
+        beta = 1.0,
+        num_reads = 400,
+        chain_strength = 1,
+        s_pause = 0.5,
+        pause_duration= 1.0,
+        parallel_runs = True)
 
-    dataset = BarsAndStripes(16, 0.85, use_offsets = False, seed = random_seed)
+    dataset = BarsAndStripes(16, 0.80, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()
@@ -411,13 +420,14 @@ def train_important_quantum_rbms_256():
 
     for p in parameters:
         logging.info("Training this rbm now")
-        rbm = RBM(q_sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.16, seed = random_seed)
+        rbm = RBM(q_sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.08, seed = random_seed)
+
         rbm.log_statistics(evaluation_set, evaluation_labels)
         rbm.save_parameters(rbm_file_name.format(256, p[0], 0))
+        #rbm.load_parameters(rbm_file_name.format(256, p[0], 6))
 
-        # Quantum training
         for e in range(0, epochs):
-            rbm.train(batches, learning_rate=p[1], regularization_constant=0.0, epochs=1, momentum=0.5, max_size=p[0], label_mode='passive')
+            rbm.train(batches, learning_rate=p[1], regularization_constant=0.0, epochs=1, momentum=0.5, max_size=p[0], label_mode='passive', log_batches = True)
             rbm.log_statistics(evaluation_set, evaluation_labels)
             rbm.save_parameters(rbm_file_name.format(256, p[0], e+1))
 

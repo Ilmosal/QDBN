@@ -168,7 +168,7 @@ class RBM(object):
 
         return dropoff_w_matrices, dropoff_h_biases, dropoff_v_biases, drop_w_mask, drop_h_mask, drop_v_mask, max_divide
 
-    def create_sampler_parameters(self, dropoff_params, h_ids, v_ids, max_size, label_mode = "passive"):
+    def create_sampler_parameters(self, dropoff_params, h_ids, v_ids, max_size, label_mode = "passive", lb_constant = 0.5):
         """
         Create sampler parameters with certain dropoff parameters
         """
@@ -199,19 +199,14 @@ class RBM(object):
 
         # Add passive label influence to hidden biases
         if self.input_included is not None and label_mode == "passive":
-            label_influence = np.dot(np.zeros(self.input_included) + 1.0, self.label_weights)
-
-            for i in range(max_divide):
-                for j, h_id in enumerate(h_ids[i*tmp_max_size:(i+1)*tmp_max_size]):
-                    dropoff_h_biases[i][j] += label_influence[h_id]
-
-            dropoff_h_bias += label_influence
+            label_influence = np.dot(np.zeros(self.input_included) + lb_constant, self.label_weights)
 
         if self.sampler.model_id == "model_cd":
             sampler_params['weights'] = dropoff_weights
             sampler_params['visible'] = dropoff_v_bias
             sampler_params['hidden'] = dropoff_h_bias
             sampler_params['label_mode'] = label_mode
+            sampler_params['label_influence'] = label_influence
 
             if label_mode == "active":
                 sampler_params['label_weights'] = self.label_weights
@@ -225,6 +220,7 @@ class RBM(object):
             sampler_params['v_ids'] = v_ids
             sampler_params['max_size'] = tmp_max_size
             sampler_params['max_divide'] = max_divide
+            sampler_params['label_influence'] = label_influence
 
         return sampler_params, dropoff_weights, dropoff_h_bias
 
@@ -280,7 +276,7 @@ class RBM(object):
                 sampler_params, dropoff_weights, dropoff_h_bias = self.create_sampler_parameters(dropoff_params, h_ids, v_ids, max_size, label_mode)
 
                 # Create the hidden states 
-                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias)
+                state[1] = utils.sigmoid(np.dot(state[0], dropoff_weights) + dropoff_h_bias + np.dot(label_state, self.label_weights))
                 state_copy = copy.deepcopy(state)
                 state[1] = utils.sample(state[1], self.generator)
 

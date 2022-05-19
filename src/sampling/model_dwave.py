@@ -8,10 +8,7 @@ import numpy as np
 from networkx import Graph
 
 from dwave.embedding.chimera import find_biclique_embedding
-from dwave.embedding import embed_ising
-from dwave_networkx import chimera_graph
-from dimod.reference.samplers import SimulatedAnnealingSampler
-from dwave.inspector import show
+from dimod import BinaryQuadraticModel, SampleSet
 from dwave.system import DWaveSampler, FixedEmbeddingComposite
 
 from braket.ocean_plugin import BraketDWaveSampler
@@ -24,7 +21,7 @@ class ModelDWave(Model):
     """
     Base class for model for DWave machines with various layouts
     """
-    def __init__(self, layout, source = "dwave", beta=1.0, num_reads = 100, s_pause = 0.5, pause_duration = 100.0, parallel_runs = False):
+    def __init__(self, layout, source = "dwave", beta=1.0, num_reads = 100, s_pause = 0.5, pause_duration = 100.0, parallel_runs = False, chain_strength = 1):
         super(ModelDWave, self).__init__("model_dwave")
 
         if layout not in ['chimera', 'pegasus']:
@@ -39,10 +36,12 @@ class ModelDWave(Model):
         self.num_reads = num_reads
         self.s_pause = s_pause
         self.pause_duration = pause_duration
+        self.chain_strength = chain_strength
 
         # Multiple passes defaults to True
         self.multiple_passes = True
         self.parallel_runs = parallel_runs
+        self.different_rmbs_in_parallel = False
 
         self.embeddings = {
             'aws': {
@@ -103,13 +102,21 @@ class ModelDWave(Model):
         self.max_size = sampler_parameters['max_size']
         self.parallel = sampler_parameters['max_divide']
 
+        # Insert label influence
+        for i in range(self.parallel):
+            for j, h_id in enumerate(self.h_ids[i * self.max_size:(i+1) * self.max_size]):
+                self.hidden[i][j] += sampler_parameters['label_influence'][h_id]
+
         # Test if an embedding exists for these parameters, otherwise multiple passes are required
         if self.max_size in self.embeddings[self.source].keys() and self.parallel in self.embeddings[self.source][self.max_size].keys():
             self.multiple_passes = False
 
-            # Check wether parallel runs are possible
+            # Check whether parallel runs are possible
             if self.parallel_runs and len(self.embeddings[self.source][self.max_size].keys()) >= 1:
                 self.parallel = max(self.embeddings[self.source][self.max_size].keys())
+
+            if sampler_parameters['max_divide'] > 1:
+                self.different_rmbs_in_parallel = True
         else:
             self.multiple_passes = True
 
@@ -125,28 +132,32 @@ class ModelDWave(Model):
             results = []
 
             for pr in range(self.parallel):
-                h_bias, j_coupling = self.generate_partial_couplings(pr)
-                a_schedule = [
-                        [0.0, 0.0],
-                        [50.0, self.s_pause],
-                        [50.0 + self.pause_duration, self.s_pause],
-                        [100.0 + self.pause_duration, 1.0]
-                        ]
+                h_bias, j_couplings = self.generate_partial_couplings(pr)
+                bqm = self.create_bqm(pr)
 
-                results.append(
-                    emb_problem.sample_ising(
-                        h_bias,
-                        j_coupling,
-                        return_embedding = True,
-                        num_reads = self.num_reads,
-                        num_spin_reversal_transforms = 5,
-                        anneal_schedule = a_schedule)
-                )
+                if self.pause_duration == 0.0:
+                    a_schedule = None
+                else:
+                    a_schedule = [
+                            [0.0, 0.0],
+                            [50.0, self.s_pause],
+                            [50.0 + self.pause_duration, self.s_pause],
+                            [100.0 + self.pause_duration, 1.0]
+                            ]
 
-            samples = self.extract_values_from_partial_samples(results)
+                new_result = emb_problem.sample(
+                    bqm,
+                    chain_strength = self.chain_strength,
+                    num_reads = self.num_reads,
+                    num_spin_reversal_transforms = 5,
+                    anneal_schedule = a_schedule)
+
+                results.append(new_result)
+
+            samples = self.extract_values_from_partial_bqm_samples(results)
 
         else:
-            h_bias, j_coupling = self.generate_couplings()
+            bqm = self.create_bqm()
 
             if self.pause_duration == 0.0:
                 a_schedule = None
@@ -161,20 +172,96 @@ class ModelDWave(Model):
             # Reduce the number of reads when computing things in parallel
             eff_num_reads = self.num_reads
 
-            if self.parallel_runs:
+            if self.parallel_runs and not self.different_rmbs_in_parallel:
                 eff_num_reads = int(self.num_reads / self.parallel)
 
-            response = emb_problem.sample_ising(
-                h_bias,
-                j_coupling,
-                return_embedding = True,
+            response = emb_problem.sample(
+                bqm,
                 num_reads = eff_num_reads,
+                chain_strength = self.chain_strength,
                 num_spin_reversal_transforms = 5,
                 anneal_schedule = a_schedule)
 
-            samples = self.extract_values_from_samples(response)
+            samples = self.extract_values_from_bqm_samples(response)
 
         return samples
+
+    def extract_values_from_partial_bqm_samples(self, results):
+        """
+        Function for extracting values for bqm samples
+        """
+        states = [np.zeros((self.num_reads, len(self.v_ids))), np.zeros((self.num_reads, len(self.h_ids)))]
+
+        # Extract the values from the results object
+        for res_id, res in enumerate(results):
+            data_id = 0
+            for data in res.data():
+                for count in range(data.num_occurrences):
+                    for v_id in range(self.max_size):
+                        states[0][data_id][self.v_ids[res_id * self.max_size + v_id]] = data.sample['v_0_{0}'.format(v_id)]
+
+                    for h_id in range(self.max_size):
+                        states[1][data_id][self.h_ids[res_id * self.max_size + h_id]] = data.sample['h_0_{0}'.format(h_id)]
+
+                    data_id += 1
+
+        return states
+
+    def extract_values_from_bqm_samples(self, results):
+        """
+        Function for extracting values for bqm samples
+        """
+        states = [np.zeros((self.num_reads, len(self.v_ids))), np.zeros((self.num_reads, len(self.h_ids)))]
+
+        data_id = 0
+
+        # Extract the values from the results object
+        for data in results.data():
+            for count in range(data.num_occurrences):
+                for p_id in range(self.parallel):
+                    for v_id in range(len(self.v_ids)):
+                        states[0][data_id][self.v_ids[v_id]] = data.sample['v_{0}_{1}'.format(p_id, v_id)]
+
+                    for h_id in range(len(self.h_ids)):
+                        states[1][data_id][self.h_ids[h_id]] = data.sample['h_{0}_{1}'.format(p_id, h_id)]
+
+                    data_id += 1
+
+        return states
+
+    def create_bqm(self, parallel_id = None):
+        """
+        Function for creating a BQM for the sampler
+        """
+        bqm = BinaryQuadraticModel('BINARY')
+
+        for pr in range(self.parallel):
+            pr_id = pr
+
+            # If computing stuff in parallel, only pick values from the first pr_id
+            if parallel_id is not None:
+                pr_id = parallel_id
+            elif self.parallel_runs and not self.different_rmbs_in_parallel:
+                pr_id = 0
+
+            for i in range(self.max_size):
+                for j in range(self.max_size):
+                    bqm.add_interaction(
+                        'v_{0}_{1}'.format(pr, i),
+                        'h_{0}_{1}'.format(pr, j),
+                        -self.weights[pr_id][i, j] * self.beta
+                    )
+
+            for i in range(self.max_size):
+                bqm.add_variable('v_{0}_{1}'.format(pr, i), -self.visible[pr_id][i] * self.beta)
+
+            for j in range(self.max_size):
+                bqm.add_variable('h_{0}_{1}'.format(pr, j), -self.hidden[pr_id][j] * self.beta)
+
+            if self.multiple_passes:
+                return bqm
+
+        return bqm
 
     def create_sampler(self):
         """
@@ -235,7 +322,7 @@ class ModelDWave(Model):
         vis_states = np.zeros([self.parallel, n_samples, self.max_size])
         hid_states = np.zeros([self.parallel, n_samples, self.max_size])
 
-        # Extract the values from the results object
+        # Extract the values from the results object and convert to right format
         for pr in range(self.parallel):
             for i in range(n_samples):
                 for vis_id in range(self.max_size):
@@ -246,15 +333,25 @@ class ModelDWave(Model):
 
         states = [np.zeros((self.num_reads, len(self.v_ids))), np.zeros((self.num_reads, len(self.h_ids)))]
 
-        # Change the format of the states to correspond to the actual RBM
+        # Change the format of the states to be in right order
         if self.parallel_runs:
-            for pr in range(self.parallel):
-                for sample_id in range(n_samples):
-                    for i, v_id in enumerate(self.v_ids):
-                        states[0][pr * n_samples + sample_id, v_id] = vis_states[pr, sample_id, i]
+            if self.different_rmbs_in_parallel:
+                modulo_val = self.max_size
+            else:
+                modulo_val = len(self.v_ids)
 
-                    for j, h_id in enumerate(self.h_ids):
-                        states[1][pr * n_samples + sample_id, h_id] = hid_states[pr, sample_id, j]
+            for sample_id in range(n_samples):
+                for i, v_id in enumerate(self.v_ids):
+                    pr = int(np.floor(i / modulo_val))
+                    pr_unwrap = int(np.floor(i / self.max_size))
+
+                    states[0][pr * n_samples + sample_id, v_id] = vis_states[pr_unwrap, sample_id, i % self.max_size]
+
+                for j, h_id in enumerate(self.h_ids):
+                    pr = int(np.floor(j / modulo_val))
+                    pr_unwrap = int(np.floor(j / self.max_size))
+
+                    states[1][pr * n_samples + sample_id, h_id] = hid_states[pr_unwrap, sample_id, j % self.max_size]
         else:
             for pr in range(self.parallel):
                 for sample_id in range(n_samples):
@@ -323,19 +420,19 @@ class ModelDWave(Model):
 
         for i in range(self.max_size):
             for j in range(self.max_size):
-                j_couplings[('v_0_{0}'.format(i), 'h_0_{0}'.format(j))] = self.weights[parallel_index][i, j] / 4
+                j_couplings[('v_0_{0}'.format(i), 'h_0_{0}'.format(j))] = -self.weights[parallel_index][i, j] / 4
 
         for i in range(self.max_size):
-            h_mag['v_0_{0}'.format(i)] = self.visible[parallel_index][i] / 2
+            h_mag['v_0_{0}'.format(i)] = -self.visible[parallel_index][i] / 2
 
             for j in range(self.max_size):
-                h_mag['v_0_{0}'.format(i)] += self.weights[parallel_index][i, j] / 4
+                h_mag['v_0_{0}'.format(i)] -= self.weights[parallel_index][i, j] / 4
 
         for j in range(self.max_size):
-            h_mag['h_0_{0}'.format(j)] = self.hidden[parallel_index][j] / 2
+            h_mag['h_0_{0}'.format(j)] = -self.hidden[parallel_index][j] / 2
 
             for i in range(self.max_size):
-                h_mag['h_0_{0}'.format(j)] += self.weights[parallel_index][i, j] / 4
+                h_mag['h_0_{0}'.format(j)] -= self.weights[parallel_index][i, j] / 4
 
         for h_key in h_mag.keys():
             h_mag[h_key] /= self.beta
@@ -355,25 +452,25 @@ class ModelDWave(Model):
         for pr in range(self.parallel):
             pr_id = pr
 
-            # If computing stuff in parallel, only pick values from the first pr_id
-            if self.parallel_runs:
+            # If computing stuff in parallel for one sub rbm, only pick values from the first pr_id
+            if not self.different_rmbs_in_parallel:
                 pr_id = 0
 
             for i in range(self.max_size):
                 for j in range(self.max_size):
-                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = self.weights[pr_id][i, j] / 4
+                    j_couplings[('v_{0}_{1}'.format(pr, i), 'h_{0}_{1}'.format(pr, j))] = -self.weights[pr_id][i, j] / 4
 
             for i in range(self.max_size):
-                h_mag['v_{0}_{1}'.format(pr, i)] = self.visible[pr_id][i] / 2
+                h_mag['v_{0}_{1}'.format(pr, i)] = -self.visible[pr_id][i] / 2
 
                 for j in range(self.max_size):
-                    h_mag['v_{0}_{1}'.format(pr, i)] += self.weights[pr_id][i, j] / 4
+                    h_mag['v_{0}_{1}'.format(pr, i)] -= self.weights[pr_id][i, j] / 4
 
             for j in range(self.max_size):
-                h_mag['h_{0}_{1}'.format(pr, j)] = self.hidden[pr_id][j] / 2
+                h_mag['h_{0}_{1}'.format(pr, j)] = -self.hidden[pr_id][j] / 2
 
                 for i in range(self.max_size):
-                    h_mag['h_{0}_{1}'.format(pr, j)] += self.weights[pr_id][i, j] / 4
+                    h_mag['h_{0}_{1}'.format(pr, j)] -= self.weights[pr_id][i, j] / 4
 
         for h_key in h_mag.keys():
             h_mag[h_key] /= self.beta
