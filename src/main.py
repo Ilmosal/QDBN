@@ -305,7 +305,7 @@ def train_important_quantum_rbms_64():
     batch_size = 2000
     data_vector_size = 64
     hidden_layer_size = 64
-    epochs = 1
+    epochs = 10
 
     random_seed = 123456788
 
@@ -336,12 +336,13 @@ def train_important_quantum_rbms_64():
 
     rbm = RBM(q_sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32, seed = random_seed)
 #    rbm.save_parameters(rbm_file_name.format(64, 0))
+    rmb.load_parameters(rbm_file_name.format(64, 10))
     rbm.log_statistics(evaluation_set, evaluation_labels)
 
-    for e in range(0, epochs):
+    for e in range(10, 10+epochs):
         rbm.train(batches, learning_rate=0.1, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=64, label_mode='passive', log_batches = True)
         rbm.log_statistics(evaluation_set, evaluation_labels)
-#        rbm.save_parameters(rbm_file_name.format(64, e+1))
+        rbm.save_parameters(rbm_file_name.format(64, e+1))
 
 def train_important_classical_rbms_64():
     logging.info('Training important classical RBMS with size 64x64')
@@ -377,8 +378,8 @@ def train_important_classical_rbms_64():
         logging.info("Training this rbm now")
 
         rbm = RBM(sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.32, seed = random_seed)
-        rbm.log_statistics(evaluation_set, evaluation_labels)
         rbm.save_parameters(rbm_file_name.format(64, p[0], p[1], 0))
+        rbm.log_statistics(evaluation_set, evaluation_labels)
 
         for e in range(epochs):
             rbm.train(batches, learning_rate=0.1, regularization_constant=0.0, epochs=1, momentum=0.5, max_size=-1, label_mode=p[1])
@@ -398,6 +399,8 @@ def train_important_quantum_rbms_256():
     random_seed = 123456788
 
     parameters = [
+        [64, 0.1],
+        [98, 0.1],
         [128, 0.1]
     ]
 
@@ -409,7 +412,7 @@ def train_important_quantum_rbms_256():
         chain_strength = 1,
         s_pause = 0.5,
         pause_duration= 1.0,
-        parallel_runs = True)
+        parallel_runs = False)
 
     dataset = BarsAndStripes(16, 0.80, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
@@ -423,10 +426,10 @@ def train_important_quantum_rbms_256():
         rbm = RBM(q_sampler, shape=[data_vector_size, data_vector_size], input_included = 2, weight_dist = 0.08, seed = random_seed)
 
         rbm.log_statistics(evaluation_set, evaluation_labels)
-        rbm.save_parameters(rbm_file_name.format(256, p[0], 0))
-        #rbm.load_parameters(rbm_file_name.format(256, p[0], 6))
+        #rbm.save_parameters(rbm_file_name.format(256, p[0], 0))
+        rbm.load_parameters(rbm_file_name.format(256, p[0], 10))
 
-        for e in range(0, epochs):
+        for e in range(10, 10+epochs):
             rbm.train(batches, learning_rate=p[1], regularization_constant=0.0, epochs=1, momentum=0.5, max_size=p[0], label_mode='passive', log_batches = True)
             rbm.log_statistics(evaluation_set, evaluation_labels)
             rbm.save_parameters(rbm_file_name.format(256, p[0], e+1))
@@ -437,20 +440,21 @@ def train_important_classical_rbms_256():
     batch_size = 250
     data_vector_size = 256
     hidden_layer_size = 256
-    epochs = 12
+    epochs = 10
     sampler = None
 
-    rbm_file_name = "./models/model_size_{0}/c_rbm_alt_{1}_epoch_{2}.json"
+    rbm_file_name = "./models/model_size_{0}/c_rbm_{1}_epoch_{2}.json"
     random_seed = 123456788
 
     parameters = [
         [64, 0.1],
+        [98, 0.1],
         [128, 0.1],
         [196, 0.1],
         [256, 0.01]
     ]
 
-    dataset = BarsAndStripes(16, 0.85, use_offsets = False, seed = random_seed)
+    dataset = BarsAndStripes(16, 0.80, use_offsets = False, seed = random_seed)
     batches = dataset.get_batches(batch_size, include_labels = True)
     tr_set = dataset.get_training_data_without_labels()
     tr_labels = dataset.get_training_labels()

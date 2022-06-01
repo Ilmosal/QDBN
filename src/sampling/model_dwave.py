@@ -108,7 +108,7 @@ class ModelDWave(Model):
                 self.hidden[i][j] += sampler_parameters['label_influence'][h_id]
 
         # Test if an embedding exists for these parameters, otherwise multiple passes are required
-        if self.max_size in self.embeddings[self.source].keys() and self.parallel in self.embeddings[self.source][self.max_size].keys():
+        if self.parallel_runs and self.max_size in self.embeddings[self.source].keys() and self.parallel in self.embeddings[self.source][self.max_size].keys():
             self.multiple_passes = False
 
             # Check whether parallel runs are possible
@@ -219,13 +219,23 @@ class ModelDWave(Model):
         for data in results.data():
             for count in range(data.num_occurrences):
                 for p_id in range(self.parallel):
-                    for v_id in range(len(self.v_ids)):
-                        states[0][data_id][self.v_ids[v_id]] = data.sample['v_{0}_{1}'.format(p_id, v_id)]
+                    if not self.different_rmbs_in_parallel:
+                        pr_id = 0
+                    else:
+                        pr_id = p_id
 
-                    for h_id in range(len(self.h_ids)):
-                        states[1][data_id][self.h_ids[h_id]] = data.sample['h_{0}_{1}'.format(p_id, h_id)]
+                    for v_id in range(self.max_size):
+                        states[0][data_id][self.v_ids[pr_id * self.max_size + v_id]] = data.sample['v_{0}_{1}'.format(p_id, v_id)]
 
+                    for h_id in range(self.max_size):
+                        states[1][data_id][self.h_ids[pr_id * self.max_size + h_id]] = data.sample['h_{0}_{1}'.format(p_id, h_id)]
+
+                    if not self.different_rmbs_in_parallel:
+                        data_id += 1
+
+                if self.different_rmbs_in_parallel:
                     data_id += 1
+
 
         return states
 
